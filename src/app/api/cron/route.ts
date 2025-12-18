@@ -44,6 +44,7 @@ export async function GET(request: NextRequest) {
         }
 
         const featuredData = await featuredRes.json();
+        console.log('RAW Steam Featured Data:', JSON.stringify(featuredData, null, 2));
 
         // 3. ROBUST RETRIEVAL: Scan ALL categories in the response
         const rawItems: any[] = [];
@@ -67,15 +68,16 @@ export async function GET(request: NextRequest) {
         // 4. PRE-SORT by discount percentage
         const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
 
-        // 5. Deep Filtering with Diagnostic Logs
+        // 5. Deep Filtering with EXTREME Diagnostic Logs
         const candidates = [];
         const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-        // Check top 30 items to be thorough
+        console.log('--- START EXTREME LOGGING ---');
+        // Check top 30 items
         for (const item of sortedUniqueItems.slice(0, 30)) {
-            // Filter 1: Discount
-            if (item.discount_percent < 30) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%)`);
+            // Filter 1: Discount (Temporarily loosened to 20 for diagnosis)
+            if (item.discount_percent < 20) {
+                console.log(`REJECT: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%). RAW: ${JSON.stringify(item)}`);
                 continue;
             }
 
@@ -97,7 +99,7 @@ export async function GET(request: NextRequest) {
             }
 
             // Filter 3: Reviews
-            console.log(`Evaluating: ${item.name} (${item.id}) - Fetching reviews...`);
+            console.log(`Evaluating: ${item.name} (${item.id}) - Discount: ${item.discount_percent}%. Fetching reviews...`);
             const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all`);
             if (!reviewRes.ok) {
                 console.log(`REJECT: ${item.name} (${item.id}) - Review fetch failed (${reviewRes.status})`);
@@ -106,17 +108,18 @@ export async function GET(request: NextRequest) {
 
             const reviewData = await reviewRes.json();
             const reviewDesc = reviewData.query_summary?.review_score_desc;
+            console.log(`RAW REVIEW DATA for ${item.name}: ${reviewDesc}`);
 
             const isHighlyRated =
                 reviewDesc === 'Very Positive' ||
                 reviewDesc === 'Overwhelmingly Positive';
 
             if (!isHighlyRated) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Rating not good enough: ${reviewDesc}`);
+                console.log(`REJECT: ${item.name} (${item.id}) - Rating not good enough: "${reviewDesc}"`);
                 continue;
             }
 
-            console.log(`MATCH: ${item.name} passed all filters!`);
+            console.log(`MATCH: ${item.name} passed all filters! Adding as candidate.`);
             candidates.push({
                 ...item,
                 review_desc: reviewDesc
@@ -124,6 +127,7 @@ export async function GET(request: NextRequest) {
 
             if (candidates.length >= 3) break;
         }
+        console.log('--- END EXTREME LOGGING ---');
 
         if (candidates.length === 0) {
             console.log('DIAGNOSTIC: No games found in the top 30 pool that passed all filters.');
