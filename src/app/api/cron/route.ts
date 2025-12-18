@@ -45,12 +45,14 @@ export async function GET(request: NextRequest) {
 
         const featuredData = await featuredRes.json();
 
-        // 3. Combine items from different categories for a wider pool
-        const rawItems: any[] = [
-            ...(featuredData.specials?.items || []),
-            ...(featuredData.top_sellers?.items || []),
-            ...(featuredData.daily_deals?.items || [])
-        ];
+        // 3. ROBUST RETRIEVAL: Scan ALL categories in the response
+        const rawItems: any[] = [];
+        for (const key in featuredData) {
+            if (featuredData[key]?.items && Array.isArray(featuredData[key].items)) {
+                console.log(`Scanned category '${key}': Found ${featuredData[key].items.length} items.`);
+                rawItems.push(...featuredData[key].items);
+            }
+        }
 
         // De-duplicate by app_id
         const uniqueItemsMap = new Map();
@@ -60,23 +62,24 @@ export async function GET(request: NextRequest) {
             }
         }
         const uniqueItems = Array.from(uniqueItemsMap.values());
-        console.log(`Found ${uniqueItems.length} unique items across categories.`);
+        console.log(`Total unique items found across ALL categories: ${uniqueItems.length}`);
 
-        // 4. PRE-SORT by discount percentage to prioritize high deals
+        // 4. PRE-SORT by discount percentage
         const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
 
-        // 5. Filtering and Verification
+        // 5. Deep Filtering with Diagnostic Logs
         const candidates = [];
         const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-        console.log(`Checking top ${Math.min(sortedUniqueItems.length, 20)} candidates for reviews and duplicates...`);
+        // Check top 30 items to be thorough
+        for (const item of sortedUniqueItems.slice(0, 30)) {
+            // Filter 1: Discount
+            if (item.discount_percent < 30) {
+                console.log(`REJECT: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%)`);
+                continue;
+            }
 
-        // Limit the pool to the top 20 discount holders to avoid timeouts
-        for (const item of sortedUniqueItems.slice(0, 20)) {
-            // Basic Filter
-            if (item.discount_percent < 30) continue;
-
-            // CHECK DUPLICATE FIRST (Cheaper than fetching reviews)
+            // Filter 2: Duplicate Check
             const { data: existingPosts, error: dbError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id')
@@ -84,19 +87,22 @@ export async function GET(request: NextRequest) {
                 .gt('created_at', fortyEightHoursAgo);
 
             if (dbError) {
-                console.error(`Supabase DB Error for ${item.name}:`, dbError);
+                console.error(`DB Error while checking ${item.name}:`, dbError);
                 continue;
             }
 
             if (existingPosts && existingPosts.length > 0) {
-                console.log(`SKIP: ${item.name} was already posted recently.`);
+                console.log(`REJECT: ${item.name} (${item.id}) - Already posted in last 48h.`);
                 continue;
             }
 
-            // Fetch Reviews only if it's NOT a duplicate
-            console.log(`Checking reviews for ${item.name} (${item.id})...`);
+            // Filter 3: Reviews
+            console.log(`Evaluating: ${item.name} (${item.id}) - Fetching reviews...`);
             const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all`);
-            if (!reviewRes.ok) continue;
+            if (!reviewRes.ok) {
+                console.log(`REJECT: ${item.name} (${item.id}) - Review fetch failed (${reviewRes.status})`);
+                continue;
+            }
 
             const reviewData = await reviewRes.json();
             const reviewDesc = reviewData.query_summary?.review_score_desc;
@@ -105,36 +111,45 @@ export async function GET(request: NextRequest) {
                 reviewDesc === 'Very Positive' ||
                 reviewDesc === 'Overwhelmingly Positive';
 
-            if (isHighlyRated) {
-                candidates.push({
-                    ...item,
-                    review_desc: reviewDesc
-                });
-
-                // We only need one game to post, so we can stop as soon as we find a valid candidate
-                // but we keep going just to log a few more options
-                if (candidates.length >= 3) break;
+            if (!isHighlyRated) {
+                console.log(`REJECT: ${item.name} (${item.id}) - Rating not good enough: ${reviewDesc}`);
+                continue;
             }
+
+            console.log(`MATCH: ${item.name} passed all filters!`);
+            candidates.push({
+                ...item,
+                review_desc: reviewDesc
+            });
+
+            if (candidates.length >= 3) break;
         }
 
         if (candidates.length === 0) {
-            console.log('No new games passed the filters in the top pool.');
-            return NextResponse.json({ message: 'No new eligible games found (checked top 20 discounts).' });
+            console.log('DIAGNOSTIC: No games found in the top 30 pool that passed all filters.');
+            return NextResponse.json({ message: 'No new eligible games found in the top 30 discounts.' });
         }
 
         // 6. Select the top candidate (already sorted by discount)
         const topGame = candidates[0];
         console.log(`MATCH: ${topGame.name} is selected!`);
 
-        // 7. Media Handling
-        const imageResponse = await fetch(topGame.header_image); // featuredcategories has header_image
+        // 7. Media & Posting with Specific Error Capture
+        console.log(`Starting media preparation for ${topGame.name}...`);
+        const imageResponse = await fetch(topGame.header_image);
         if (!imageResponse.ok) {
-            throw new Error('Failed to download game image');
+            throw new Error(`Media fetch failed for ${topGame.name}: ${imageResponse.status}`);
         }
         const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
 
-        // Upload Media to Twitter
-        const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: 'image/jpeg' });
+        let mediaId;
+        try {
+            mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: 'image/jpeg' });
+            console.log(`Twitter Media uploaded: ${mediaId}`);
+        } catch (twitterMediaError: any) {
+            console.error('CRITICAL: Twitter Media Upload Failed!', twitterMediaError.message);
+            throw twitterMediaError;
+        }
 
         // 6. Format Tweet
         // Steam returns price in cents (e.g., 599 for $5.99)
@@ -142,18 +157,18 @@ export async function GET(request: NextRequest) {
         const usdToTryRate = await getUsdToTryRate();
         const priceTRY = (priceUSD * usdToTryRate).toFixed(2);
 
-        const tweetText = `🔥 ${topGame.name}
+        const tweetText = `🔥 ${topGame.name}\n\n📉 %${topGame.discount_percent} İndirim\n🏷️ ${priceTRY} ₺ (Yaklaşık)\n\nhttps://store.steampowered.com/app/${topGame.id}`;
 
-📉 %${topGame.discount_percent} İndirim
-🏷️ ${priceTRY} ₺ (Yaklaşık)
-
-https://store.steampowered.com/app/${topGame.id}`;
-
-        // 7. Post Tweet
-        await twitterClient.v2.tweet({
-            text: tweetText,
-            media: { media_ids: [mediaId] }
-        });
+        try {
+            await twitterClient.v2.tweet({
+                text: tweetText,
+                media: { media_ids: [mediaId] }
+            });
+            console.log(`SUCCESS: Tweet posted for ${topGame.name}`);
+        } catch (twitterTweetError: any) {
+            console.error('CRITICAL: Twitter Post Failed!', twitterTweetError.message);
+            throw twitterTweetError;
+        }
 
         // 8. Log to Supabase
         const appIdInt = parseInt(topGame.id.toString());
