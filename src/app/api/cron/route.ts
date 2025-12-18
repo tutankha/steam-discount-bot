@@ -44,13 +44,11 @@ export async function GET(request: NextRequest) {
         }
 
         const featuredData = await featuredRes.json();
-        console.log('RAW Steam Featured Data:', JSON.stringify(featuredData, null, 2));
 
         // 3. ROBUST RETRIEVAL: Scan ALL categories in the response
         const rawItems: any[] = [];
         for (const key in featuredData) {
             if (featuredData[key]?.items && Array.isArray(featuredData[key].items)) {
-                console.log(`Scanned category '${key}': Found ${featuredData[key].items.length} items.`);
                 rawItems.push(...featuredData[key].items);
             }
         }
@@ -68,16 +66,15 @@ export async function GET(request: NextRequest) {
         // 4. PRE-SORT by discount percentage
         const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
 
-        // 5. Deep Filtering with EXTREME Diagnostic Logs
+        // 5. Deep Filtering
         const candidates = [];
         const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-        console.log('--- START EXTREME LOGGING ---');
-        // Check top 30 items
+        console.log('--- SCANNING TOP 30 DISCOUNTS ---');
         for (const item of sortedUniqueItems.slice(0, 30)) {
-            // Filter 1: Discount (Temporarily loosened to 20 for diagnosis)
-            if (item.discount_percent < 20) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%). RAW: ${JSON.stringify(item)}`);
+            // Filter 1: Discount (Set to 25% for production variety)
+            if (item.discount_percent < 25) {
+                console.log(`SKIP: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%)`);
                 continue;
             }
 
@@ -94,7 +91,7 @@ export async function GET(request: NextRequest) {
             }
 
             if (existingPosts && existingPosts.length > 0) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Already posted in last 48h.`);
+                console.log(`SKIP: ${item.name} (${item.id}) - Already posted recently.`);
                 continue;
             }
 
@@ -102,36 +99,35 @@ export async function GET(request: NextRequest) {
             console.log(`Evaluating: ${item.name} (${item.id}) - Discount: ${item.discount_percent}%. Fetching reviews...`);
             const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all`);
             if (!reviewRes.ok) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Review fetch failed (${reviewRes.status})`);
+                console.log(`SKIP: ${item.name} (${item.id}) - Review fetch failed.`);
                 continue;
             }
 
             const reviewData = await reviewRes.json();
             const reviewDesc = reviewData.query_summary?.review_score_desc;
-            console.log(`RAW REVIEW DATA for ${item.name}: ${reviewDesc}`);
 
             const isHighlyRated =
                 reviewDesc === 'Very Positive' ||
                 reviewDesc === 'Overwhelmingly Positive';
 
             if (!isHighlyRated) {
-                console.log(`REJECT: ${item.name} (${item.id}) - Rating not good enough: "${reviewDesc}"`);
+                console.log(`SKIP: ${item.name} (${item.id}) - Rating not good enough: "${reviewDesc}"`);
                 continue;
             }
 
-            console.log(`MATCH: ${item.name} passed all filters! Adding as candidate.`);
+            console.log(`MATCH: ${item.name} selected!`);
             candidates.push({
                 ...item,
                 review_desc: reviewDesc
             });
 
+            // We find up to 3 candidates but the first one (highest discount) will be posted
             if (candidates.length >= 3) break;
         }
-        console.log('--- END EXTREME LOGGING ---');
 
         if (candidates.length === 0) {
-            console.log('DIAGNOSTIC: No games found in the top 30 pool that passed all filters.');
-            return NextResponse.json({ message: 'No new eligible games found in the top 30 discounts.' });
+            console.log('No games met the 25% discount and High Rating criteria in this run.');
+            return NextResponse.json({ message: 'No new eligible games found.' });
         }
 
         // 6. Select the top candidate (already sorted by discount)
