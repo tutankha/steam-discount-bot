@@ -88,36 +88,39 @@ export async function GET(request: NextRequest) {
         const sortedCandidates = candidates.sort((a, b) => b.discount_percent - a.discount_percent);
         let topGame = null;
 
-        console.log(`Checking ${sortedCandidates.length} sorted candidates for duplicates...`);
+        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+        console.log(`Current Time (ISO): ${new Date().toISOString()}`);
+        console.log(`Checking duplicates since: ${fortyEightHoursAgo}`);
 
         for (const game of sortedCandidates) {
-            console.log(`Checking duplicate for: ${game.name} (ID: ${game.id})`);
-            const { data: existingPost, error: dbError } = await supabaseAdmin
+            console.log(`Checking: ${game.name} (app_id: ${game.id})`);
+
+            // Check for any post in the last 48 hours
+            const { data: existingPosts, error: dbError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id, created_at')
                 .eq('app_id', parseInt(game.id))
-                .gt('created_at', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
-                .single();
+                .gt('created_at', fortyEightHoursAgo);
 
-            if (dbError && dbError.code !== 'PGRST116') {
-                console.error(`Supabase check error for ${game.name}:`, dbError);
-                // In case of real DB error, we skip this game for safety
+            if (dbError) {
+                console.error(`Supabase DB Error for ${game.name}:`, dbError);
+                continue; // Skip this game if we can't verify its status
+            }
+
+            if (existingPosts && existingPosts.length > 0) {
+                const lastPost = existingPosts[0];
+                console.log(`SKIP: ${game.name} was already posted at ${lastPost.created_at}`);
                 continue;
             }
 
-            if (existingPost) {
-                console.log(`Duplicate found! ${game.name} was already posted at ${existingPost.created_at}`);
-                continue;
-            }
-
-            console.log(`No duplicate found for ${game.name}. Selecting it.`);
+            console.log(`MATCH: ${game.name} is new. Selecting!`);
             topGame = game;
-            break; // Found our game!
+            break;
         }
 
         if (!topGame) {
-            console.log('All eligible games (top 5) have already been posted in the last 48h.');
-            return NextResponse.json({ message: 'All eligible games have already been posted in the last 48h.' });
+            console.log('No games to post. All candidates were duplicates.');
+            return NextResponse.json({ message: 'No new eligible games found (checked top 5 candidates).' });
         }
 
         // 5. Media Handling
