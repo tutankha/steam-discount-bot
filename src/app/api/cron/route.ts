@@ -56,42 +56,48 @@ export async function GET(request: NextRequest) {
             const searchData = await searchRes.json();
             const html = searchData.results_html;
 
-            // Regex to extract AppID, Title, Discount, and Price from search HTML
-            // Example match: data-ds-appid="123" ... <span class="title">Game</span> ... <span>-50%</span> ... <span>3.99</span>
-            const appRegex = /data-ds-appid="(\d+)"/g;
-            const titleRegex = /<span class="title">([^<]+)<\/span>/g;
-            const discountRegex = /search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/g;
-            const priceRegex = /search_price[\s\S]*?strike>[\s\S]*?<br>.*?([\d.,]+)/g;
-
-            let match;
-            while ((match = appRegex.exec(html)) !== null) {
-                const appId = match[1];
-
-                // For search results, we'll fetch details or use extracted data
-                // To keep it light, let's extract basic info and fetch real review status later
-                // Note: Index-based matching in regex loop is risky, better to split by rows
+            if (!html) {
+                console.log('Search API returned no results_html.');
+            } else {
                 const rows = html.split('</a>');
+                console.log(`Search API HTML length: ${html.length}. Split into ${rows.length} potential rows.`);
+
                 for (const row of rows) {
                     const idMatch = row.match(/data-ds-appid="(\d+)"/);
                     const nameMatch = row.match(/<span class="title">([^<]+)<\/span>/);
-                    const discMatch = row.match(/search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/);
-                    const priceMatch = row.match(/search_price[\s\S]*?<br>.*?([\d.,]+)/);
+                    // Match discount (e.g., %50 or -50%)
+                    const discMatch = row.match(/search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/) ||
+                        row.match(/search_discount">[\s\S]*?<span>%(\d+)<\/span>/);
 
-                    if (idMatch && nameMatch && discMatch && priceMatch) {
-                        const discount = parseInt(discMatch[1]);
-                        const finalPriceRaw = priceMatch[1].replace(/[^\d.]/g, ''); // Convert 12.34 to float string
-                        const finalPrice = Math.round(parseFloat(finalPriceRaw) * 100);
+                    // Match price. Steam sometimes shows 199,99 TL or 199.99 TL.
+                    // We look for any numbers and commas/dots at the end of the search_price div
+                    const priceMatch = row.match(/search_price[\s\S]*?<br>.*?([\d.,]+)/) ||
+                        row.match(/search_price.*?>[\s\S]*?([\d.,]+)/);
 
-                        rawItems.push({
-                            id: idMatch[1],
-                            name: nameMatch[1],
-                            discount_percent: discount,
-                            final_price: finalPrice,
-                            header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${idMatch[1]}/header.jpg`
-                        });
+                    if (idMatch && nameMatch) {
+                        const appId = idMatch[1];
+                        const name = nameMatch[1];
+                        const discount = discMatch ? parseInt(discMatch[1]) : 0;
+
+                        let finalPrice = 0;
+                        if (priceMatch) {
+                            // Convert "129,99" or "129.99" to cents integer
+                            // Remove everything except digits. So 129,99 -> 12999
+                            const cleanPrice = priceMatch[1].replace(/[^\d]/g, '');
+                            finalPrice = parseInt(cleanPrice);
+                        }
+
+                        if (discount > 0) {
+                            rawItems.push({
+                                id: appId,
+                                name: name,
+                                discount_percent: discount,
+                                final_price: finalPrice,
+                                header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
+                            });
+                        }
                     }
                 }
-                break; // We used the rows logic instead of global regex loop
             }
         }
 
