@@ -44,16 +44,30 @@ export async function GET(request: NextRequest) {
         }
 
         const featuredData = await featuredRes.json();
-        const specials = featuredData.specials?.items || [];
 
-        // 3. Filtering and Verification
+        // 3. Combine items from different categories for a wider pool
+        const rawItems: any[] = [
+            ...(featuredData.specials?.items || []),
+            ...(featuredData.top_sellers?.items || []),
+            ...(featuredData.daily_deals?.items || [])
+        ];
+
+        // De-duplicate by app_id
+        const uniqueItemsMap = new Map();
+        for (const item of rawItems) {
+            if (!uniqueItemsMap.has(item.id)) {
+                uniqueItemsMap.set(item.id, item);
+            }
+        }
+        const uniqueItems = Array.from(uniqueItemsMap.values());
+        console.log(`Found ${uniqueItems.length} unique items across categories.`);
+
+        // 4. Filtering and Verification
         const candidates = [];
 
-        for (const item of specials) {
+        for (const item of uniqueItems) {
             // Basic Filters
             const isHighDiscount = item.discount_percent >= 30;
-            // Note: we can't be 100% sure about "game" type from this endpoint alone, 
-            // but usually these are the main titles. We'll check reviews now.
 
             if (!isHighDiscount) continue;
 
@@ -75,16 +89,14 @@ export async function GET(request: NextRequest) {
                     review_desc: reviewDesc
                 });
             }
-
-            // Stop after finding a few candidates to avoid rate limits
-            if (candidates.length >= 5) break;
         }
 
         if (candidates.length === 0) {
+            console.log('No games passed the filters today.');
             return NextResponse.json({ message: 'No games passed the filters today.' });
         }
 
-        // 4. Find the best game that hasn't been posted yet
+        // 5. Find the best game that hasn't been posted yet
         const sortedCandidates = candidates.sort((a, b) => b.discount_percent - a.discount_percent);
         let topGame = null;
 
@@ -93,7 +105,7 @@ export async function GET(request: NextRequest) {
         console.log(`Checking duplicates since: ${fortyEightHoursAgo}`);
 
         for (const game of sortedCandidates) {
-            console.log(`Checking: ${game.name} (app_id: ${game.id})`);
+            console.log(`Checking: ${game.name} (app_id: ${game.id}, discount: ${game.discount_percent}%)`);
 
             // Check for any post in the last 48 hours
             const { data: existingPosts, error: dbError } = await supabaseAdmin
@@ -104,7 +116,7 @@ export async function GET(request: NextRequest) {
 
             if (dbError) {
                 console.error(`Supabase DB Error for ${game.name}:`, dbError);
-                continue; // Skip this game if we can't verify its status
+                continue;
             }
 
             if (existingPosts && existingPosts.length > 0) {
@@ -120,10 +132,10 @@ export async function GET(request: NextRequest) {
 
         if (!topGame) {
             console.log('No games to post. All candidates were duplicates.');
-            return NextResponse.json({ message: 'No new eligible games found (checked top 5 candidates).' });
+            return NextResponse.json({ message: 'No new eligible games found (checked all candidates).' });
         }
 
-        // 5. Media Handling
+        // 6. Media Handling
         const imageResponse = await fetch(topGame.header_image); // featuredcategories has header_image
         if (!imageResponse.ok) {
             throw new Error('Failed to download game image');
