@@ -88,25 +88,35 @@ export async function GET(request: NextRequest) {
         const sortedCandidates = candidates.sort((a, b) => b.discount_percent - a.discount_percent);
         let topGame = null;
 
+        console.log(`Checking ${sortedCandidates.length} sorted candidates for duplicates...`);
+
         for (const game of sortedCandidates) {
+            console.log(`Checking duplicate for: ${game.name} (ID: ${game.id})`);
             const { data: existingPost, error: dbError } = await supabaseAdmin
                 .from('posted_games')
-                .select('id')
+                .select('id, created_at')
                 .eq('app_id', parseInt(game.id))
                 .gt('created_at', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
                 .single();
 
             if (dbError && dbError.code !== 'PGRST116') {
-                throw dbError;
+                console.error(`Supabase check error for ${game.name}:`, dbError);
+                // In case of real DB error, we skip this game for safety
+                continue;
             }
 
-            if (!existingPost) {
-                topGame = game;
-                break; // Found our game!
+            if (existingPost) {
+                console.log(`Duplicate found! ${game.name} was already posted at ${existingPost.created_at}`);
+                continue;
             }
+
+            console.log(`No duplicate found for ${game.name}. Selecting it.`);
+            topGame = game;
+            break; // Found our game!
         }
 
         if (!topGame) {
+            console.log('All eligible games (top 5) have already been posted in the last 48h.');
             return NextResponse.json({ message: 'All eligible games have already been posted in the last 48h.' });
         }
 
@@ -140,12 +150,13 @@ https://store.steampowered.com/app/${topGame.id}`;
         });
 
         // 8. Log to Supabase
+        console.log(`Logging ${topGame.name} to Supabase with app_id: ${topGame.id} and price_usd: ${priceUSD}`);
         const { error: insertError } = await supabaseAdmin
             .from('posted_games')
             .insert({
-                app_id: topGame.id,
+                app_id: parseInt(topGame.id),
                 game_title: topGame.name,
-                price_usd: parseFloat(priceTRY)
+                price_usd: priceUSD // Corrected: Use USD price instead of TRY
             });
 
         if (insertError) {
