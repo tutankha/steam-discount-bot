@@ -153,17 +153,22 @@ https://store.steampowered.com/app/${topGame.id}`;
         });
 
         // 8. Log to Supabase
-        console.log(`Logging ${topGame.name} to Supabase with app_id: ${topGame.id} and price_usd: ${priceUSD}`);
-        const { error: insertError } = await supabaseAdmin
+        const appIdInt = parseInt(topGame.id.toString());
+        console.log(`Final step: Logging to Supabase with app_id: ${appIdInt}`);
+
+        const { data: insertData, error: insertError } = await supabaseAdmin
             .from('posted_games')
             .insert({
-                app_id: parseInt(topGame.id),
+                app_id: appIdInt,
                 game_title: topGame.name,
-                price_usd: priceUSD // Corrected: Use USD price instead of TRY
-            });
+                price_usd: priceUSD
+            })
+            .select();
 
         if (insertError) {
-            console.error('Error logging to Supabase:', insertError);
+            console.error('CRITICAL: Supabase insertion failed!', insertError);
+        } else {
+            console.log('SUCCESS: Game successfully logged to Supabase.', insertData);
         }
 
         return NextResponse.json({
