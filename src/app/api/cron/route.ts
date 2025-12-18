@@ -7,13 +7,14 @@ export const dynamic = 'force-dynamic';
 
 // Constants
 const STEAM_FEATURED_API = 'https://store.steampowered.com/api/featuredcategories/?cc=tr';
+const STEAM_SEARCH_API = 'https://store.steampowered.com/search/results/?query&start=0&count=50&specials=1&infinite=1&json=1&cc=tr';
 const CURRENCY_API_URL = 'https://open.er-api.com/v6/latest/USD';
 
 async function getUsdToTryRate(): Promise<number> {
     try {
         const res = await fetch(CURRENCY_API_URL);
         const data = await res.json();
-        return data.rates.TRY || 42.73; // Fallback to current rate if API fails
+        return data.rates.TRY || 42.73; // Fallback
     } catch (error) {
         console.error('Failed to fetch exchange rate:', error);
         return 42.73; // Fallback
@@ -31,37 +32,83 @@ export async function GET(request: NextRequest) {
         const twitterClient = getTwitterClient();
         const supabaseAdmin = getSupabaseAdmin();
 
-        // 2. Fetch Featured/Specials from Steam
-        console.log('Fetching from Steam Featured API...');
-        const featuredRes = await fetch(STEAM_FEATURED_API, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        });
+        // 2. Fetch Data from both Featured and Search APIs
+        console.log('Fetching from Steam APIs...');
+        const [featuredRes, searchRes] = await Promise.all([
+            fetch(STEAM_FEATURED_API, { headers: { 'User-Agent': 'Mozilla/5.0' } }),
+            fetch(STEAM_SEARCH_API, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+        ]);
 
-        if (!featuredRes.ok) {
-            throw new Error(`Steam Featured API returned ${featuredRes.status}`);
-        }
-
-        const featuredData = await featuredRes.json();
-
-        // 3. ROBUST RETRIEVAL: Scan ALL categories in the response
         const rawItems: any[] = [];
-        for (const key in featuredData) {
-            if (featuredData[key]?.items && Array.isArray(featuredData[key].items)) {
-                rawItems.push(...featuredData[key].items);
+
+        // 2a. Process Featured Data
+        if (featuredRes.ok) {
+            const featuredData = await featuredRes.json();
+            for (const key in featuredData) {
+                if (featuredData[key]?.items && Array.isArray(featuredData[key].items)) {
+                    rawItems.push(...featuredData[key].items);
+                }
             }
         }
 
-        // De-duplicate by app_id
+        // 2b. Process Search Data (HTML Parsing)
+        if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const html = searchData.results_html;
+
+            // Regex to extract AppID, Title, Discount, and Price from search HTML
+            // Example match: data-ds-appid="123" ... <span class="title">Game</span> ... <span>-50%</span> ... <span>3.99</span>
+            const appRegex = /data-ds-appid="(\d+)"/g;
+            const titleRegex = /<span class="title">([^<]+)<\/span>/g;
+            const discountRegex = /search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/g;
+            const priceRegex = /search_price[\s\S]*?strike>[\s\S]*?<br>.*?([\d.,]+)/g;
+
+            let match;
+            while ((match = appRegex.exec(html)) !== null) {
+                const appId = match[1];
+
+                // For search results, we'll fetch details or use extracted data
+                // To keep it light, let's extract basic info and fetch real review status later
+                // Note: Index-based matching in regex loop is risky, better to split by rows
+                const rows = html.split('</a>');
+                for (const row of rows) {
+                    const idMatch = row.match(/data-ds-appid="(\d+)"/);
+                    const nameMatch = row.match(/<span class="title">([^<]+)<\/span>/);
+                    const discMatch = row.match(/search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/);
+                    const priceMatch = row.match(/search_price[\s\S]*?<br>.*?([\d.,]+)/);
+
+                    if (idMatch && nameMatch && discMatch && priceMatch) {
+                        const discount = parseInt(discMatch[1]);
+                        const finalPriceRaw = priceMatch[1].replace(/[^\d.]/g, ''); // Convert 12.34 to float string
+                        const finalPrice = Math.round(parseFloat(finalPriceRaw) * 100);
+
+                        rawItems.push({
+                            id: idMatch[1],
+                            name: nameMatch[1],
+                            discount_percent: discount,
+                            final_price: finalPrice,
+                            header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${idMatch[1]}/header.jpg`
+                        });
+                    }
+                }
+                break; // We used the rows logic instead of global regex loop
+            }
+        }
+
+        // 3. De-duplicate and Validate IDs
         const uniqueItemsMap = new Map();
         for (const item of rawItems) {
+            // CRITICAL FIX: Ensure ID is present and is a number strings
+            if (!item.id || isNaN(parseInt(item.id.toString()))) {
+                console.log(`SKIP INVALID ID: ${item.name || 'Unknown'} (ID: ${item.id})`);
+                continue;
+            }
             if (!uniqueItemsMap.has(item.id)) {
                 uniqueItemsMap.set(item.id, item);
             }
         }
         const uniqueItems = Array.from(uniqueItemsMap.values());
-        console.log(`Total unique items found across ALL categories: ${uniqueItems.length}`);
+        console.log(`Total unique items found across ALL sources: ${uniqueItems.length}`);
 
         // 4. PRE-SORT by discount percentage
         const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
@@ -79,10 +126,11 @@ export async function GET(request: NextRequest) {
             }
 
             // Filter 2: Duplicate Check
+            const appIdInt = parseInt(item.id.toString());
             const { data: existingPosts, error: dbError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id')
-                .eq('app_id', parseInt(item.id))
+                .eq('app_id', appIdInt)
                 .gt('created_at', fortyEightHoursAgo);
 
             if (dbError) {
