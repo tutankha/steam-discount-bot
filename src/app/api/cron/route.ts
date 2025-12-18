@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getTwitterClient } from '@/lib/twitter';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
+// Final deployment trigger
 export const dynamic = 'force-dynamic';
 
 // Constants
