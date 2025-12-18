@@ -60,32 +60,19 @@ export async function GET(request: NextRequest) {
                 console.log('Search API returned no results_html.');
             } else {
                 const rows = html.split('</a>');
-                console.log(`Search API HTML length: ${html.length}. Split into ${rows.length} potential rows.`);
+                console.log(`Search API HTML length: ${html.length}. Rows: ${rows.length}`);
 
                 for (const row of rows) {
                     const idMatch = row.match(/data-ds-appid="(\d+)"/);
-                    const nameMatch = row.match(/<span class="title">([^<]+)<\/span>/);
-                    // Match discount (e.g., %50 or -50%)
-                    const discMatch = row.match(/search_discount">[\s\S]*?<span>-?(\d+)%<\/span>/) ||
-                        row.match(/search_discount">[\s\S]*?<span>%(\d+)<\/span>/);
-
-                    // Match price. Steam sometimes shows 199,99 TL or 199.99 TL.
-                    // We look for any numbers and commas/dots at the end of the search_price div
-                    const priceMatch = row.match(/search_price[\s\S]*?<br>.*?([\d.,]+)/) ||
-                        row.match(/search_price.*?>[\s\S]*?([\d.,]+)/);
+                    const nameMatch = row.match(/class="title">([^<]+)/);
+                    const discMatch = row.match(/data-discount="(\d+)"/);
+                    const priceMatch = row.match(/data-price-final="(\d+)"/);
 
                     if (idMatch && nameMatch) {
                         const appId = idMatch[1];
-                        const name = nameMatch[1];
+                        const name = nameMatch[1].trim();
                         const discount = discMatch ? parseInt(discMatch[1]) : 0;
-
-                        let finalPrice = 0;
-                        if (priceMatch) {
-                            // Convert "129,99" or "129.99" to cents integer
-                            // Remove everything except digits. So 129,99 -> 12999
-                            const cleanPrice = priceMatch[1].replace(/[^\d]/g, '');
-                            finalPrice = parseInt(cleanPrice);
-                        }
+                        const finalPrice = priceMatch ? parseInt(priceMatch[1]) : 0;
 
                         if (discount > 0) {
                             rawItems.push({
@@ -105,10 +92,7 @@ export async function GET(request: NextRequest) {
         const uniqueItemsMap = new Map();
         for (const item of rawItems) {
             // CRITICAL FIX: Ensure ID is present and is a number strings
-            if (!item.id || isNaN(parseInt(item.id.toString()))) {
-                console.log(`SKIP INVALID ID: ${item.name || 'Unknown'} (ID: ${item.id})`);
-                continue;
-            }
+            if (!item.id || isNaN(parseInt(item.id.toString()))) continue;
             if (!uniqueItemsMap.has(item.id)) {
                 uniqueItemsMap.set(item.id, item);
             }
