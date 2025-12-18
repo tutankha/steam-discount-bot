@@ -62,16 +62,38 @@ export async function GET(request: NextRequest) {
         const uniqueItems = Array.from(uniqueItemsMap.values());
         console.log(`Found ${uniqueItems.length} unique items across categories.`);
 
-        // 4. Filtering and Verification
+        // 4. PRE-SORT by discount percentage to prioritize high deals
+        const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
+
+        // 5. Filtering and Verification
         const candidates = [];
+        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-        for (const item of uniqueItems) {
-            // Basic Filters
-            const isHighDiscount = item.discount_percent >= 30;
+        console.log(`Checking top ${Math.min(sortedUniqueItems.length, 20)} candidates for reviews and duplicates...`);
 
-            if (!isHighDiscount) continue;
+        // Limit the pool to the top 20 discount holders to avoid timeouts
+        for (const item of sortedUniqueItems.slice(0, 20)) {
+            // Basic Filter
+            if (item.discount_percent < 30) continue;
 
-            // Fetch Reviews for this specific game
+            // CHECK DUPLICATE FIRST (Cheaper than fetching reviews)
+            const { data: existingPosts, error: dbError } = await supabaseAdmin
+                .from('posted_games')
+                .select('id')
+                .eq('app_id', parseInt(item.id))
+                .gt('created_at', fortyEightHoursAgo);
+
+            if (dbError) {
+                console.error(`Supabase DB Error for ${item.name}:`, dbError);
+                continue;
+            }
+
+            if (existingPosts && existingPosts.length > 0) {
+                console.log(`SKIP: ${item.name} was already posted recently.`);
+                continue;
+            }
+
+            // Fetch Reviews only if it's NOT a duplicate
             console.log(`Checking reviews for ${item.name} (${item.id})...`);
             const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all`);
             if (!reviewRes.ok) continue;
@@ -88,54 +110,23 @@ export async function GET(request: NextRequest) {
                     ...item,
                     review_desc: reviewDesc
                 });
+
+                // We only need one game to post, so we can stop as soon as we find a valid candidate
+                // but we keep going just to log a few more options
+                if (candidates.length >= 3) break;
             }
         }
 
         if (candidates.length === 0) {
-            console.log('No games passed the filters today.');
-            return NextResponse.json({ message: 'No games passed the filters today.' });
+            console.log('No new games passed the filters in the top pool.');
+            return NextResponse.json({ message: 'No new eligible games found (checked top 20 discounts).' });
         }
 
-        // 5. Find the best game that hasn't been posted yet
-        const sortedCandidates = candidates.sort((a, b) => b.discount_percent - a.discount_percent);
-        let topGame = null;
+        // 6. Select the top candidate (already sorted by discount)
+        const topGame = candidates[0];
+        console.log(`MATCH: ${topGame.name} is selected!`);
 
-        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-        console.log(`Current Time (ISO): ${new Date().toISOString()}`);
-        console.log(`Checking duplicates since: ${fortyEightHoursAgo}`);
-
-        for (const game of sortedCandidates) {
-            console.log(`Checking: ${game.name} (app_id: ${game.id}, discount: ${game.discount_percent}%)`);
-
-            // Check for any post in the last 48 hours
-            const { data: existingPosts, error: dbError } = await supabaseAdmin
-                .from('posted_games')
-                .select('id, created_at')
-                .eq('app_id', parseInt(game.id))
-                .gt('created_at', fortyEightHoursAgo);
-
-            if (dbError) {
-                console.error(`Supabase DB Error for ${game.name}:`, dbError);
-                continue;
-            }
-
-            if (existingPosts && existingPosts.length > 0) {
-                const lastPost = existingPosts[0];
-                console.log(`SKIP: ${game.name} was already posted at ${lastPost.created_at}`);
-                continue;
-            }
-
-            console.log(`MATCH: ${game.name} is new. Selecting!`);
-            topGame = game;
-            break;
-        }
-
-        if (!topGame) {
-            console.log('No games to post. All candidates were duplicates.');
-            return NextResponse.json({ message: 'No new eligible games found (checked all candidates).' });
-        }
-
-        // 6. Media Handling
+        // 7. Media Handling
         const imageResponse = await fetch(topGame.header_image); // featuredcategories has header_image
         if (!imageResponse.ok) {
             throw new Error('Failed to download game image');
