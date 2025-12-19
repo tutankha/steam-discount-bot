@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // Constants
 const STEAM_FEATURED_API = 'https://store.steampowered.com/api/featuredcategories/?cc=tr';
-const STEAM_SEARCH_API = 'https://store.steampowered.com/search/results/?query&start=0&count=50&specials=1&infinite=1&json=1&cc=tr';
+const STEAM_SEARCH_API = 'https://store.steampowered.com/search/results/?query&start=0&count=100&specials=1&infinite=1&json=1&cc=tr';
 const CURRENCY_API_URL = 'https://open.er-api.com/v6/latest/USD';
 
 async function getUsdToTryRate(): Promise<number> {
@@ -62,6 +62,7 @@ export async function GET(request: NextRequest) {
                 const rows = html.split('</a>');
                 console.log(`Search API HTML length: ${html.length}. Rows: ${rows.length}`);
 
+                let searchRank = 0;
                 for (const row of rows) {
                     const idMatch = row.match(/data-ds-appid="(\d+)"/);
                     const nameMatch = row.match(/class="title">([^<]+)/);
@@ -69,6 +70,7 @@ export async function GET(request: NextRequest) {
                     const priceMatch = row.match(/data-price-final="(\d+)"/);
 
                     if (idMatch && nameMatch) {
+                        searchRank++;
                         const appId = idMatch[1];
                         const name = nameMatch[1].trim();
                         const discount = discMatch ? parseInt(discMatch[1]) : 0;
@@ -80,6 +82,7 @@ export async function GET(request: NextRequest) {
                                 name: name,
                                 discount_percent: discount,
                                 final_price: finalPrice,
+                                search_rank: searchRank, // Store rank as a proxy for popularity
                                 header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
                             });
                         }
@@ -100,15 +103,22 @@ export async function GET(request: NextRequest) {
         const uniqueItems = Array.from(uniqueItemsMap.values());
         console.log(`Total unique items found across ALL sources: ${uniqueItems.length}`);
 
-        // 4. PRE-SORT by discount percentage
-        const sortedUniqueItems = uniqueItems.sort((a, b) => b.discount_percent - a.discount_percent);
+        // 4. SCORING & SORTING (Prioritize High Discount + Popularity)
+        // Score = Discount % + Popularity Bonus (100 - search_rank, max 100)
+        const scoredUniqueItems = uniqueItems.map(item => {
+            const popularityBonus = item.search_rank ? Math.max(0, 100 - item.search_rank) : 0;
+            return {
+                ...item,
+                selection_score: item.discount_percent + (popularityBonus * 1.0) // Boosted multiplier (was 0.5) to favor popular games more
+            };
+        }).sort((a, b) => b.selection_score - a.selection_score);
 
         // 5. Deep Filtering
         const candidates = [];
         const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
-        console.log('--- SCANNING TOP 30 DISCOUNTS ---');
-        for (const item of sortedUniqueItems.slice(0, 30)) {
+        console.log('--- [v4-FINAL] SCANNING ALL CANDIDATES (100) ---');
+        for (const item of scoredUniqueItems.slice(0, 100)) {
             // Filter 1: Discount (Set to 25% for production variety)
             if (item.discount_percent < 25) {
                 console.log(`SKIP: ${item.name} (${item.id}) - Discount too low (${item.discount_percent}%)`);
@@ -119,7 +129,7 @@ export async function GET(request: NextRequest) {
             const appIdInt = parseInt(item.id.toString());
             const { data: existingPosts, error: dbError } = await supabaseAdmin
                 .from('posted_games')
-                .select('id')
+                .select('id, created_at')
                 .eq('app_id', appIdInt)
                 .gt('created_at', fortyEightHoursAgo);
 
@@ -129,27 +139,31 @@ export async function GET(request: NextRequest) {
             }
 
             if (existingPosts && existingPosts.length > 0) {
-                console.log(`SKIP: ${item.name} (${item.id}) - Already posted recently.`);
+                console.log(`SKIP: ${item.name} (${item.id}) - Already in DB (Posted at: ${existingPosts[0].created_at || 'unknown'})`);
                 continue;
             }
 
             // Filter 3: Reviews
             console.log(`Evaluating: ${item.name} (${item.id}) - Discount: ${item.discount_percent}%. Fetching reviews...`);
-            const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all`);
+            const reviewRes = await fetch(`https://store.steampowered.com/appreviews/${item.id}?json=1&language=all&purchase_type=all&l=english`);
             if (!reviewRes.ok) {
                 console.log(`SKIP: ${item.name} (${item.id}) - Review fetch failed.`);
                 continue;
             }
 
             const reviewData = await reviewRes.json();
-            const reviewDesc = reviewData.query_summary?.review_score_desc;
+            const reviewDesc = reviewData.query_summary?.review_score_desc || 'No Description';
+            const totalPositive = reviewData.query_summary?.total_positive || 0;
+            const totalNegative = reviewData.query_summary?.total_negative || 0;
+            const totalReviews = reviewData.query_summary?.total_reviews || 0;
 
-            const isHighlyRated =
-                reviewDesc === 'Very Positive' ||
-                reviewDesc === 'Overwhelmingly Positive';
+            console.log(`[v4-FINAL] DEBUG: ${item.name} (${item.id}) | P: ${totalPositive}, N: ${totalNegative} | Desc: ${reviewDesc}`);
 
-            if (!isHighlyRated) {
-                console.log(`SKIP: ${item.name} (${item.id}) - Rating not good enough: "${reviewDesc}"`);
+            // NEW RULE: If positive reviews > negative reviews, it qualifies
+            const isGoodEnough = totalPositive > totalNegative;
+
+            if (!isGoodEnough) {
+                console.log(`SKIP: ${item.name} (${item.id}) - Rating not good enough: ${totalPositive} Pos vs ${totalNegative} Neg (Score: ${item.selection_score})`);
                 continue;
             }
 
