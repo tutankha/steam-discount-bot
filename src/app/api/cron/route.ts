@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // Constants
 const ITAD_API_KEY = process.env.ITAD_API_KEY || 'b0a1c3354549db7f5371f9b05de11261634a0aa4';
-const ITAD_DEALS_API = `https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&limit=100`;
+const ITAD_DEALS_API = `https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&limit=500`;
 
 export async function GET(request: NextRequest) {
     try {
@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
         const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
         console.log('--- [v4-ITAD] SCANNING CANDIDATES ---');
-        for (const item of scoredUniqueItems.slice(0, 100)) {
+        for (const item of scoredUniqueItems.slice(0, 300)) {
             // Filter 1: Discount and Junk Titles
             if (item.discount_percent < 25) {
                 console.log(`SKIP: ${item.name} - Discount too low (${item.discount_percent}%)`);
@@ -165,7 +165,7 @@ export async function GET(request: NextRequest) {
                 }
             }
 
-            // Skip known 403 placeholder
+            // Skip known 403 placeholder only if we don't have a Steam fallback image
             if (item.header_image.includes('placeholder.jpg') && !appId) {
                 console.log(`SKIP: ${item.name} - No AppID and only has placeholder image.`);
                 continue;
