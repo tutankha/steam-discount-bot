@@ -154,15 +154,21 @@ export async function GET(request: NextRequest) {
             }
 
             if (!isGoodEnough) {
-                // RELAXATION: If it's a top-ranked item (high popularity) on ITAD, allow it even if reviews are missing/sparse
-                if (item.search_rank <= 10 && item.discount_percent >= 50) {
-                    console.log(`ALLOW (Popular): ${item.name} - No reviews but Rank ${item.search_rank} and high discount.`);
+                // RELAXATION: If it's a relatively popular item (top 30) with a decent discount, allow it
+                if (item.search_rank <= 30 && item.discount_percent >= 50) {
+                    console.log(`ALLOW (Popular): ${item.name} - Rank ${item.search_rank} exemption.`);
                     isGoodEnough = true;
                     reviewText = `Rank ${item.search_rank} Popularity`;
                 } else {
                     console.log(`SKIP: ${item.name} - Rating not good enough or missing: ${reviewText} (Score: ${item.selection_score})`);
                     continue;
                 }
+            }
+
+            // Skip known 403 placeholder
+            if (item.header_image.includes('placeholder.jpg') && !appId) {
+                console.log(`SKIP: ${item.name} - No AppID and only has placeholder image.`);
+                continue;
             }
 
             // Use Steam CDN if appId is available for more reliable media fetch
@@ -178,7 +184,7 @@ export async function GET(request: NextRequest) {
                 header_image: finalHeaderImage
             });
 
-            if (candidates.length >= 3) break;
+            if (candidates.length >= 10) break;
         }
 
         if (candidates.length === 0) {
