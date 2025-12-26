@@ -301,12 +301,18 @@ ${reviewStr}
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
                 console.log(`✅ Tweet posted in ${elapsed}s`);
 
-                // 9. Log to DB
-                await supabaseAdmin.from('posted_games').insert({
-                    app_id: game.id.replace(/^(epic_|gog_)/, '') || '0',
+                // 9. Log to DB - extract numeric app_id or use 0
+                const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 10)) || 0;
+
+                const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
+                    app_id: numericAppId,
                     game_title: game.name,
-                    price_usd: 0
+                    price_usd: game.final_price || 0
                 });
+
+                if (dbError) {
+                    console.error('DB insert error:', dbError.message);
+                }
 
                 return NextResponse.json({
                     success: true,
