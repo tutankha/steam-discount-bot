@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // Constants
 const ITAD_API_KEY = process.env.ITAD_API_KEY || 'b0a1c3354549db7f5371f9b05de11261634a0aa4';
-const ITAD_DEALS_API = `https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&limit=100`;
+const ITAD_DEALS_API = `https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&limit=100&sort=trending&mature=true`;
 
 export async function GET(request: NextRequest) {
     try {
@@ -56,12 +56,15 @@ export async function GET(request: NextRequest) {
             const popularityBonus = Math.max(0, 100 - item.search_rank);
             // Extra bonus for 100% discount (Free games)
             const freeBonus = item.discount_percent === 100 ? 500 : 0;
-            // Bonus for standalone games vs DLC/Packages
-            const typeBonus = item.type === 'game' ? 50 : 0;
+            // HUGE bonus for standalone games vs DLC/Packages to prioritize AAA
+            const typeBonus = item.type === 'game' ? 500 : 0;
+            // Shop bonus for preferred stores
+            const preferredShops = ['Steam', 'Epic Game Store', 'GOG'];
+            const shopBonus = preferredShops.includes(item.shop_name) ? 100 : 0;
 
             return {
                 ...item,
-                selection_score: item.discount_percent + (popularityBonus * 1.5) + freeBonus + typeBonus
+                selection_score: item.discount_percent + (popularityBonus * 0.5) + freeBonus + typeBonus + shopBonus
             };
         }).sort((a: any, b: any) => b.selection_score - a.selection_score);
 
@@ -77,11 +80,10 @@ export async function GET(request: NextRequest) {
                 continue;
             }
 
-            if (item.name.toLowerCase().includes('commercial license') ||
-                item.name.toLowerCase().includes('soundtrack') ||
-                item.name.toLowerCase().includes('subscription')) {
+            const junkTerms = ['commercial license', 'soundtrack', 'subscription', 'dlc', 'expansion', 'pass', 'pack', 'bundle'];
+            if (junkTerms.some(term => item.name.toLowerCase().includes(term))) {
                 if (item.discount_percent < 95) { // Only allow these if they are near-free or free
-                    console.log(`SKIP: ${item.name} - Non-game or license title with sub-95% discount.`);
+                    console.log(`SKIP: ${item.name} - Non-game/DLC title with sub-95% discount.`);
                     continue;
                 }
             }
