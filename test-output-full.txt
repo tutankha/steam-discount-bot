@@ -1,0 +1,53 @@
+Fetching from ITAD API...
+ITAD returned 100 deals.
+
+--- TOP 10 SCORED ITEMS ---
+1. [game] Two Worlds II HD - Call of the Tenebrae - Commercial License - Score: 692.0 (Discount: 83%, Rank: 82, Shop: Steam)
+2. [game] Z.I.O.N. - Commercial License - Score: 664.5 (Discount: 50%, Rank: 71, Shop: Steam)
+3. [game] Fallen - Commercial License - Score: 661.0 (Discount: 50%, Rank: 78, Shop: Steam)
+4. [game] Counter Terrorism - Minesweeper - Commercial License - Score: 659.5 (Discount: 50%, Rank: 81, Shop: Steam)
+5. [game] Paladin (1988) - Score: 656.0 (Discount: 40%, Rank: 68, Shop: GOG)
+6. [game] Super Dungeon Boy - Commercial License - Score: 656.0 (Discount: 51%, Rank: 90, Shop: Steam)
+7. [game] Boreal Blade - Commercial License - Score: 650.5 (Discount: 50%, Rank: 99, Shop: Steam)
+8. [game] Cross Board SOCCER - Commercial License - Score: 644.0 (Discount: 36%, Rank: 84, Shop: Steam)
+9. [game] Business Wars - The Card Game - Commercial License - Score: 640.0 (Discount: 30%, Rank: 80, Shop: Steam)
+10. [game] Pure Farming 2018 - Commercial License - Score: 613.5 (Discount: 10%, Rank: 93, Shop: Steam)
+
+--- SCANNING FOR CANDIDATE ---
+SKIP: Two Worlds II HD - Call of the Tenebrae - Commercial License - Junk/DLC filter
+SKIP: Z.I.O.N. - Commercial License - Junk/DLC filter
+SKIP: Fallen - Commercial License - Junk/DLC filter
+SKIP: Counter Terrorism - Minesweeper - Commercial License - Junk/DLC filter
+MATCH CANDIDATE: Paladin (1988) [game] - Score: 656
+SKIP: Super Dungeon Boy - Commercial License - Junk/DLC filter
+SKIP: Boreal Blade - Commercial License - Junk/DLC filter
+SKIP: Cross Board SOCCER - Commercial License - Junk/DLC filter
+SKIP: Business Wars - The Card Game - Commercial License - Junk/DLC filter
+MATCH CANDIDATE: Rage in Peace Collector's Edition [package] - Score: 211
+MATCH CANDIDATE: Two Worlds Epic Edition Complete [package] - Score: 205
+SKIP: Meridian4 Bundle - Junk/DLC filter
+SKIP: BROK The InvestiGator + Soundtrack - Junk/DLC filter
+SKIP: Maid of Sker Bundle - Junk/DLC filter
+MATCH CANDIDATE: Resolutiion OST [dlc] - Score: 184.5
+SKIP: Pixelsplit Horror Bundle - Junk/DLC filter
+MATCH CANDIDATE: GRIME - Score [dlc] - Score: 178.5
+MATCH CANDIDATE: Kitaria Fables - Festive Christmas Outfit [dlc] - Score: 176.5
+SKIP: GYLT Game + Original Soundtrack - Junk/DLC filter
+SKIP: Soulstone Survivors + Soundtrack Bundle - Junk/DLC filter
+SKIP: The Metronomicon - Chiptune Pack 2 - Junk/DLC filter
+MATCH CANDIDATE: Resolutiion OST - The Last Website [dlc] - Score: 159.5
+SKIP: We Were Here Too: Original Soundtrack - Junk/DLC filter
+SKIP: Teppo and The Secret Ancient City Soundtrack - Junk/DLC filter
+SKIP: The Symbiant - Artbook & CG Pack - Junk/DLC filter
+SKIP: Dreams in the Witch House Bundle - Junk/DLC filter
+SKIP: Wavecade - Effect Color Pack - Junk/DLC filter
+SKIP: Settle & Carlisle DLC or Standalone - Junk/DLC filter
+SKIP: The Symbiant + The Symbiant Re:Union Bundle - Junk/DLC filter
+MATCH CANDIDATE: EON ALTAR - Episodes 1 + 2 - The Battle for Tarnum + Whispers in the Catacombs [dlc] - Score: 130
+MATCH CANDIDATE: ATV Drifts & Tricks [dlc] - Score: 127
+SKIP: Guns of Icarus Online 4-Pack - Junk/DLC filter
+MATCH CANDIDATE: Traveller Classic RPG Collection [null] - Score: 104.5
+SKIP: Digiarty AI Powered Image & Video Editing Bundle - Junk/DLC filter
+MATCH CANDIDATE: The Journey Down Chapter 2 [dlc] - Score: 90
+MATCH CANDIDATE: Craft of Gods - Edition Deluxe [dlc] - Score: 73.5
+SKIP: World of Warcraft - Subscription - 6-Month Special Offer - Junk/DLC filter

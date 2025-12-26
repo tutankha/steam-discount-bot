@@ -2,14 +2,217 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getTwitterClient } from '@/lib/twitter';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
-// Final deployment trigger
+// GitHub Actions ile çalışır - timeout sorunu yok
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 dakika (Vercel Pro için, Free'de 10s)
 
-// Constants
 const ITAD_API_KEY = process.env.ITAD_API_KEY || 'b0a1c3354549db7f5371f9b05de11261634a0aa4';
-const ITAD_DEALS_API = `https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&limit=100&sort=trending&mature=true`;
+const MIN_STEAM_REVIEWS = 1000;
+const MIN_GOG_REVIEWS = 500;
 
+// ============ HELPERS ============
+async function getAppIdFromItad(itadId: string): Promise<string | null> {
+    try {
+        const res = await fetch(`https://api.isthereanydeal.com/games/info/v2?key=${ITAD_API_KEY}&id=${itadId}`);
+        if (res.ok) {
+            const data = await res.json();
+            return data.appid?.toString() || null;
+        }
+    } catch (e) { }
+    return null;
+}
+
+async function getSteamReviews(appId: string): Promise<{ count: number; percent: number } | null> {
+    try {
+        const res = await fetch(`https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=all`);
+        if (res.ok) {
+            const data = await res.json();
+            const positive = data.query_summary?.total_positive || 0;
+            const total = data.query_summary?.total_reviews || 0;
+            if (total > 0) {
+                return { count: total, percent: Math.round((positive / total) * 100) };
+            }
+        }
+    } catch (e) { }
+    return null;
+}
+
+// ============ STEAM DEALS ============
+async function fetchSteamDeals(): Promise<any[]> {
+    const deals: any[] = [];
+    const seen = new Set<number>();
+
+    // Steam Featured API
+    try {
+        const res = await fetch('https://store.steampowered.com/api/featuredcategories?cc=tr', {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const allItems = [
+                ...(data.specials?.items || []),
+                ...(data.top_sellers?.items || []),
+                ...(data.new_releases?.items || [])
+            ];
+
+            for (const item of allItems) {
+                if (seen.has(item.id)) continue;
+                seen.add(item.id);
+
+                if (item.discounted && item.discount_percent >= 25) {
+                    const reviews = await getSteamReviews(item.id.toString());
+
+                    deals.push({
+                        id: item.id.toString(),
+                        name: item.name,
+                        discount_percent: item.discount_percent,
+                        final_price: item.final_price / 100,
+                        currency: 'TL',
+                        platform: 'Steam',
+                        review_percent: reviews?.percent || 0,
+                        review_count: reviews?.count || 0,
+                        url: `https://store.steampowered.com/app/${item.id}`,
+                        header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/header.jpg`
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Steam error:', e);
+    }
+
+    return deals;
+}
+
+// ============ EPIC DEALS ============
+async function fetchEpicDeals(): Promise<any[]> {
+    const deals: any[] = [];
+
+    // Epic Free Games
+    try {
+        const res = await fetch('https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=tr&country=TR', {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const games = data.data?.Catalog?.searchStore?.elements || [];
+
+            for (const game of games) {
+                if (!game.title || !game.promotions) continue;
+                const promos = game.promotions?.promotionalOffers?.[0]?.promotionalOffers || [];
+                const isFree = promos.some((p: any) => p.discountSetting?.discountPercentage === 0);
+
+                if (isFree) {
+                    const slug = game.productSlug || game.urlSlug || game.catalogNs?.mappings?.[0]?.pageSlug;
+                    if (slug && slug !== '[]') {
+                        deals.push({
+                            id: `epic_${game.id}`,
+                            name: game.title,
+                            discount_percent: 100,
+                            final_price: 0,
+                            currency: 'TL',
+                            platform: 'Epic Games',
+                            review_percent: 90,
+                            review_count: 10000,
+                            url: `https://store.epicgames.com/tr/p/${slug}`,
+                            header_image: game.keyImages?.find((img: any) => img.type === 'OfferImageWide')?.url ||
+                                game.keyImages?.[0]?.url
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Epic free games error:', e);
+    }
+
+    // ITAD for Epic sales (with popularity filter)
+    try {
+        const res = await fetch(`https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&shops=16&limit=30&sort=-cut`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const itadDeals = data.list || [];
+
+            for (const item of itadDeals) {
+                if (item.type === 'game' && item.deal.cut >= 50) { // Min %50 indirim
+                    const alreadyAdded = deals.some(d => d.name.toLowerCase() === item.title.toLowerCase());
+                    if (!alreadyAdded) {
+                        const appId = await getAppIdFromItad(item.id);
+                        if (!appId) continue;
+
+                        const reviews = await getSteamReviews(appId);
+                        if (!reviews || reviews.count < MIN_STEAM_REVIEWS) continue;
+
+                        deals.push({
+                            id: `epic_${item.id}`,
+                            name: item.title,
+                            discount_percent: item.deal.cut,
+                            final_price: item.deal.price.amount,
+                            currency: 'TL',
+                            platform: 'Epic Games',
+                            review_percent: reviews.percent,
+                            review_count: reviews.count,
+                            url: `https://store.epicgames.com/tr/p/${item.slug}`,
+                            header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Epic ITAD error:', e);
+    }
+
+    return deals;
+}
+
+// ============ GOG DEALS ============
+async function fetchGOGDeals(): Promise<any[]> {
+    const deals: any[] = [];
+
+    try {
+        const res = await fetch('https://catalog.gog.com/v1/catalog?limit=30&order=desc:discount&productType=in:game', {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const products = data.products || [];
+
+            for (const game of products) {
+                const discountStr = game.price?.discount || '0';
+                const discount = Math.abs(parseInt(discountStr.replace(/[^0-9-]/g, '')) || 0);
+                const reviewsCount = game.reviewsCount || 0;
+                const reviewsRating = game.reviewsRating || 0;
+
+                if (discount >= 25 && reviewsCount >= MIN_GOG_REVIEWS) {
+                    deals.push({
+                        id: `gog_${game.id}`,
+                        name: game.title,
+                        discount_percent: discount,
+                        final_price: parseFloat(game.price?.finalMoney?.amount) || 0,
+                        currency: game.price?.finalMoney?.currency || 'USD',
+                        platform: 'GOG',
+                        review_percent: Math.round((reviewsRating / 50) * 100),
+                        review_count: reviewsCount,
+                        url: game.storeLink || `https://www.gog.com/en/game/${game.slug}`,
+                        header_image: game.coverHorizontal || null
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('GOG error:', e);
+    }
+
+    return deals;
+}
+
+// ============ MAIN HANDLER ============
 export async function GET(request: NextRequest) {
+    const startTime = Date.now();
+
     try {
         // 1. Security Check
         const authHeader = request.headers.get('authorization');
@@ -20,266 +223,112 @@ export async function GET(request: NextRequest) {
         const twitterClient = getTwitterClient();
         const supabaseAdmin = getSupabaseAdmin();
 
-        // 2. Fetch Data from ITAD Deals API
-        console.log('Fetching from ITAD API...');
-        const itadRes = await fetch(ITAD_DEALS_API, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        // 2. Fetch deals from all platforms
+        console.log('🔍 Fetching deals from all platforms...');
+        const [steamDeals, epicDeals, gogDeals] = await Promise.all([
+            fetchSteamDeals(),
+            fetchEpicDeals(),
+            fetchGOGDeals()
+        ]);
 
-        if (!itadRes.ok) {
-            throw new Error(`ITAD API fetch failed: ${itadRes.status}`);
-        }
+        const allDeals = [...steamDeals, ...epicDeals, ...gogDeals];
+        console.log(`📦 Steam: ${steamDeals.length} | Epic: ${epicDeals.length} | GOG: ${gogDeals.length}`);
 
-        const itadData = await itadRes.json();
-        const dealList = itadData.list || [];
-        console.log(`ITAD returned ${dealList.length} deals.`);
+        // 3. Deduplicate and sort by discount
+        const seen = new Set<string>();
+        const uniqueDeals = allDeals.filter(d => {
+            const key = d.name.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).sort((a, b) => b.discount_percent - a.discount_percent);
 
-        // 3. Process and Score Items
-        // We'll map ITAD deals to our standard format.
-        // ITAD typically returns results sorted by relevance/popularity, but we'll apply our own logic.
-        const rawItems = dealList.map((item: any, index: number) => {
-            return {
-                itad_id: item.id,
-                name: item.title,
-                type: item.type, // game, dlc, package
-                discount_percent: item.deal.cut,
-                final_price: item.deal.price.amount, // This is already in TRY float
-                currency: item.deal.price.currency,
-                shop_name: item.deal.shop.name,
-                shop_id: item.deal.shop.id,
-                deal_url: item.deal.url,
-                search_rank: index + 1, // Use position in ITAD list as proxy for popularity
-                header_image: item.assets.banner600 || item.assets.banner400 || item.assets.banner300 || `https://assets.isthereanydeal.com/placeholder.jpg`
-            };
-        });
+        console.log(`🎯 Total unique: ${uniqueDeals.length}`);
 
-        // 4. SCORING & SORTING (Prioritize High Discount + Popularity)
-        const scoredUniqueItems = rawItems.map((item: any) => {
-            const popularityBonus = Math.max(0, 100 - item.search_rank);
-            // Extra bonus for 100% discount (Free games)
-            const freeBonus = item.discount_percent === 100 ? 500 : 0;
-            // HUGE bonus for standalone games vs DLC/Packages to prioritize AAA
-            const typeBonus = item.type === 'game' ? 500 : 0;
-            // Shop bonus for preferred stores
-            const preferredShops = ['Steam', 'Epic Game Store', 'GOG'];
-            const shopBonus = preferredShops.includes(item.shop_name) ? 100 : 0;
+        // 4. Calculate repost window
+        const poolSize = uniqueDeals.length;
+        let repostHours = 48;
+        if (poolSize >= 50) repostHours = 120;
+        else if (poolSize >= 30) repostHours = 72;
 
-            return {
-                ...item,
-                selection_score: item.discount_percent + (popularityBonus * 0.5) + freeBonus + typeBonus + shopBonus
-            };
-        }).sort((a: any, b: any) => b.selection_score - a.selection_score);
+        const repostWindow = new Date(Date.now() - repostHours * 60 * 60 * 1000).toISOString();
 
-        // 5. Deep Filtering
-        const candidates = [];
-        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+        // 5. Find first eligible game
+        for (const game of uniqueDeals) {
+            const { data: existing } = await supabaseAdmin
+                .from('posted_games')
+                .select('id')
+                .eq('game_title', game.name)
+                .gt('created_at', repostWindow);
 
-        console.log('--- [v4-ITAD] SCANNING CANDIDATES ---');
-        for (const item of scoredUniqueItems.slice(0, 100)) {
-            // Filter 1: Discount and Junk Titles
-            if (item.discount_percent < 25) {
-                console.log(`SKIP: ${item.name} - Discount too low (${item.discount_percent}%)`);
+            if (existing && existing.length > 0) {
+                console.log(`SKIP: ${game.name} - Posted recently`);
                 continue;
             }
 
-            const junkTerms = ['commercial license', 'soundtrack', 'subscription', 'dlc', 'expansion', 'pass', 'pack', 'bundle'];
-            if (junkTerms.some(term => item.name.toLowerCase().includes(term))) {
-                if (item.discount_percent < 95) { // Only allow these if they are near-free or free
-                    console.log(`SKIP: ${item.name} - Non-game/DLC title with sub-95% discount.`);
-                    continue;
-                }
-            }
-
-            // Filter 2: Fetch Info to get AppID and Reviews
-            console.log(`Fetching ITAD Info for: ${item.name} (${item.itad_id})...`);
-            const infoRes = await fetch(`https://api.isthereanydeal.com/games/info/v2?key=${ITAD_API_KEY}&id=${item.itad_id}`);
-            if (!infoRes.ok) {
-                console.log(`SKIP: ${item.name} - Info fetch failed.`);
-                continue;
-            }
-            const infoData = await infoRes.json();
-            const appId = infoData.appid; // numeric or null
-
-            // Filter 3: Duplicate Check
-            if (appId) {
-                const { data: existingPosts, error: dbError } = await supabaseAdmin
-                    .from('posted_games')
-                    .select('id, created_at')
-                    .eq('app_id', appId)
-                    .gt('created_at', fortyEightHoursAgo);
-
-                if (dbError) {
-                    console.error(`DB Error while checking ${item.name}:`, dbError);
-                    continue;
-                }
-
-                if (existingPosts && existingPosts.length > 0) {
-                    console.log(`SKIP: ${item.name} (${appId}) - Already in DB (Posted at: ${existingPosts[0].created_at || 'unknown'})`);
-                    continue;
-                }
-            }
-
-            // Filter 4: Quality Check (using ITAD aggregated reviews if available)
-            // If it has Steam reviews, we'll try to use those.
-            const steamReview = infoData.reviews?.find((r: any) => r.source === 'Steam');
-            let isGoodEnough = false;
-            let reviewText = "No reviews";
-
-            if (steamReview) {
-                // ITAD gives a score (0-100) for Steam reviews based on positive %
-                const score = steamReview.score || 0;
-                isGoodEnough = score >= 70; // 70% positive is usually "Mostly Positive" or better
-                reviewText = `Steam: %${score} Positive (${steamReview.count} reviews)`;
-            } else if (infoData.reviews && infoData.reviews.length > 0) {
-                // If no Steam reviews, check if any other source has a good score
-                const avgScore = infoData.reviews.reduce((acc: number, r: any) => acc + (r.score || 0), 0) / infoData.reviews.length;
-                isGoodEnough = avgScore >= 70;
-                reviewText = `Avg Score: ${avgScore.toFixed(0)}`;
-            } else if (appId) {
-                // FALLBACK: If ITAD has no reviews but has an AppID, try Steam directly
-                console.log(`  FALLBACK: Fetching Steam reviews for ${item.name} (${appId})...`);
-                try {
-                    const steamReviewRes = await fetch(`https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=all&l=english`);
-                    if (steamReviewRes.ok) {
-                        const steamReviewData = await steamReviewRes.json();
-                        const totalPositive = steamReviewData?.query_summary?.total_positive || 0;
-                        const totalNegative = steamReviewData?.query_summary?.total_negative || 0;
-                        const totalReviews = steamReviewData?.query_summary?.total_reviews || 0;
-
-                        if (totalReviews > 0) {
-                            isGoodEnough = totalPositive > totalNegative;
-                            const percent = ((totalPositive / totalReviews) * 100).toFixed(0);
-                            reviewText = `Steam Fallback: %${percent} Positive (${totalReviews} reviews)`;
-                        }
-                    }
-                } catch (e) {
-                    console.error(`Steam fallback failed for ${item.name}:`, e);
-                }
-            }
-
-            if (!isGoodEnough) {
-                // RELAXATION: If it's a relatively popular item (top 30) with a decent discount, allow it
-                if (item.search_rank <= 30 && item.discount_percent >= 50) {
-                    console.log(`ALLOW (Popular): ${item.name} - Rank ${item.search_rank} exemption.`);
-                    isGoodEnough = true;
-                    reviewText = `Rank ${item.search_rank} Popularity`;
-                } else {
-                    console.log(`SKIP: ${item.name} - Rating not good enough or missing: ${reviewText} (Score: ${item.selection_score})`);
-                    continue;
-                }
-            }
-
-            // Skip known 403 placeholder only if we don't have a Steam fallback image
-            if (item.header_image.includes('placeholder.jpg') && !appId) {
-                console.log(`SKIP: ${item.name} - No AppID and only has placeholder image.`);
+            if (!game.header_image) {
+                console.log(`SKIP: ${game.name} - No image`);
                 continue;
             }
 
-            // Use Steam CDN if appId is available for more reliable media fetch
-            const finalHeaderImage = appId
-                ? `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
-                : item.header_image;
+            console.log(`✅ SELECTED: ${game.name} - ${game.discount_percent}% on ${game.platform}`);
 
-            console.log(`MATCH: ${item.name} selected!`);
-            candidates.push({
-                ...item,
-                steam_appid: appId,
-                review_desc: reviewText,
-                header_image: finalHeaderImage
-            });
-
-            if (candidates.length >= 10) break;
-        }
-
-        if (candidates.length === 0) {
-            console.log('No games met the 25% discount and High Rating criteria in ITAD run.');
-            return NextResponse.json({ message: 'No new eligible games found.' });
-        }
-
-        // 6. Media & Posting Loop (Try candidates until one succeeds)
-        let postedSuccessful = false;
-        let lastError = null;
-
-        console.log(`Found ${candidates.length} candidates. Starting posting loop...`);
-        for (const topGame of candidates) {
-            console.log(`- Candidate: ${topGame.name} (${topGame.shop_name}) | URL: ${topGame.header_image}`);
-        }
-
-        for (const topGame of candidates) {
+            // 6. Fetch image and post
             try {
-                console.log(`Starting media preparation for ${topGame.name} from ${topGame.shop_name}...`);
-                const imageResponse = await fetch(topGame.header_image, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+                const imgRes = await fetch(game.header_image, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                if (!imgRes.ok) continue;
+
+                const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+                const mediaId = await twitterClient.v1.uploadMedia(imgBuffer, { mimeType: 'image/jpeg' });
+
+                // 7. Format Tweet
+                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${game.final_price.toFixed(2)} ₺`;
+                const platformEmoji = game.platform === 'Steam' ? '♨️' :
+                    game.platform === 'Epic Games' ? '🎮' : '🌌';
+                const reviewStr = game.review_percent > 0 ? `⭐ %${game.review_percent} Olumlu\n` : '';
+
+                const tweetText = `🔥 ${game.name}
+
+📉 %${game.discount_percent} İndirim
+🏷️ ${priceStr}
+${platformEmoji} ${game.platform}
+${reviewStr}
+🔗 ${game.url}`.trim();
+
+                // 8. Post Tweet
+                await twitterClient.v2.tweet({ text: tweetText, media: { media_ids: [mediaId] } });
+
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                console.log(`✅ Tweet posted in ${elapsed}s`);
+
+                // 9. Log to DB
+                await supabaseAdmin.from('posted_games').insert({
+                    app_id: game.id.replace(/^(epic_|gog_)/, '') || '0',
+                    game_title: game.name,
+                    price_usd: 0
                 });
 
-                if (!imageResponse.ok) {
-                    console.log(`Media fetch failed for ${topGame.name} (${imageResponse.status}). Trying next candidate...`);
-                    continue;
-                }
-
-                const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-                let mediaId;
-                try {
-                    mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: 'image/jpeg' });
-                    console.log(`Twitter Media uploaded: ${mediaId}`);
-                } catch (twitterMediaError: any) {
-                    console.error(`Twitter Media Upload Failed for ${topGame.name}:`, twitterMediaError.message);
-                    continue;
-                }
-
-                // 8. Format Tweet
-                const priceTRY = topGame.final_price.toFixed(2);
-                const shopEmoji = topGame.shop_name.toLowerCase().includes('epic') ? '🎮' :
-                    topGame.shop_name.toLowerCase().includes('steam') ? '♨️' : '🏪';
-
-                const tweetText = `🔥 ${topGame.name}\n\n📉 %${topGame.discount_percent} İndirim\n🏷️ ${priceTRY} ₺ (Yaklaşık)\n${shopEmoji} Mağaza: ${topGame.shop_name}\n\n${topGame.deal_url}`;
-
-                try {
-                    await twitterClient.v2.tweet({
-                        text: tweetText,
-                        media: { media_ids: [mediaId] }
-                    });
-                    console.log(`SUCCESS: Tweet posted for ${topGame.name}`);
-                } catch (twitterTweetError: any) {
-                    console.error(`Twitter Post Failed for ${topGame.name}:`, twitterTweetError.message);
-                    continue;
-                }
-
-                // 9. Log to Supabase
-                const dbAppId = topGame.steam_appid || 0;
-                console.log(`Final step: Logging to Supabase with app_id: ${dbAppId}`);
-
-                await supabaseAdmin
-                    .from('posted_games')
-                    .insert({
-                        app_id: dbAppId,
-                        game_title: topGame.name,
-                        price_usd: 0
-                    });
-
-                postedSuccessful = true;
                 return NextResponse.json({
                     success: true,
-                    message: `Successfully posted ${topGame.name} from ${topGame.shop_name}`,
-                    gameId: topGame.itad_id,
-                    rating: topGame.review_desc
+                    game: game.name,
+                    platform: game.platform,
+                    discount: `${game.discount_percent}%`,
+                    price: priceStr,
+                    reviews: `${game.review_percent}%`,
+                    elapsed: `${elapsed}s`
                 });
 
             } catch (err: any) {
-                console.error(`Failed to process candidate ${topGame.name}:`, err.message);
-                lastError = err;
+                console.error(`Failed: ${game.name}`, err.message);
                 continue;
             }
         }
 
-        if (!postedSuccessful) {
-            throw new Error(lastError?.message || 'All candidates failed during media/posting phase.');
-        }
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        return NextResponse.json({ message: 'No new eligible games.', elapsed: `${elapsed}s` });
 
     } catch (error: any) {
-        console.error('Cron job failed:', error);
-        return NextResponse.json({
-            error: 'Internal Server Error',
-            details: error.message
-        }, { status: 500 });
+        console.error('Cron failed:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
     }
 }

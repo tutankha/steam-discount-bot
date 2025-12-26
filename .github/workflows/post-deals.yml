@@ -1,0 +1,32 @@
+name: Post Game Deals
+
+on:
+  schedule:
+    # Her 2 saatte bir çalışır (UTC)
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # Manuel tetikleme için
+
+jobs:
+  post-deal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Trigger Cron Endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_URL }}/api/cron")
+          
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n -1)
+          
+          echo "Status: $http_code"
+          echo "Response: $body"
+          
+          if [ "$http_code" -ge 400 ]; then
+            echo "❌ Request failed"
+            exit 1
+          fi
+          
+          echo "✅ Success"
