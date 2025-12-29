@@ -17,7 +17,8 @@ const MAX_TWEET_ATTEMPTS = 3;
 // Blacklist games that consistently fail (oversized images, duplicate issues)
 const BLACKLISTED_GAMES = [
     'disco elysium',
-    'wavetale'
+    'wavetale',
+    'skald'  // Posted twice due to name variations
 ];
 
 // ============ STEAM DEALS ============
@@ -211,9 +212,13 @@ export async function GET(request: NextRequest) {
         log(`📦 Steam: ${steamDeals.length} | Epic: ${epicDeals.length} | GOG: ${gogDeals.length}`);
 
         // 3. Deduplicate and sort by discount
+        // Normalize names by removing special characters for better matching
+        const normalizeGameName = (name: string) =>
+            name.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+
         const seen = new Set<string>();
         const uniqueDeals = allDeals.filter(d => {
-            const key = d.name.toLowerCase();
+            const key = normalizeGameName(d.name);
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
