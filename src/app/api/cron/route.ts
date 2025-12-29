@@ -274,12 +274,16 @@ export async function GET(request: NextRequest) {
                     game.platform === 'Epic Games' ? '🎮' : '🌌';
                 const metaStr = game.metacritic && game.metacritic > 0 ? `⭐ Metacritic: ${game.metacritic}\n` : '';
 
+                // Add Turkish date to make tweet unique (avoids duplicate detection)
+                const now = new Date();
+                const dateStr = now.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
+
                 const tweetText = `🔥 ${game.name}
 
 📉 %${game.discount_percent} İndirim
 🏷️ ${priceStr}
 ${platformEmoji} ${game.platform}
-${metaStr}
+${metaStr}📅 ${dateStr}
 🔗 ${game.url}`.trim();
 
                 // 8. Post Tweet
