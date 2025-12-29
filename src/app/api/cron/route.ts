@@ -21,6 +21,20 @@ const BLACKLISTED_GAMES = [
     'skald'  // Posted twice due to name variations
 ];
 
+// Fetch current USD/TRY exchange rate
+async function getExchangeRate(): Promise<number> {
+    try {
+        const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
+        if (res.ok) {
+            const data = await res.json();
+            return data.rates?.TRY || 35;
+        }
+    } catch (e) {
+        console.error('Exchange rate fetch failed:', e);
+    }
+    return 35; // Fallback rate
+}
+
 // ============ STEAM DEALS ============
 async function fetchSteamDeals(): Promise<any[]> {
     const deals: any[] = [];
@@ -286,8 +300,13 @@ export async function GET(request: NextRequest) {
                 const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
                 const mediaId = await twitterClient.v1.uploadMedia(imgBuffer, { mimeType: 'image/jpeg' });
 
-                // 7. Format Tweet
-                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${game.final_price.toFixed(2)} ${game.currency === 'TL' ? '₺' : '$'}`;
+                // 7. Format Tweet - Convert USD to TL using live rate
+                const exchangeRate = await getExchangeRate();
+                let priceInTL = game.final_price;
+                if (game.currency === 'USD' && game.final_price > 0) {
+                    priceInTL = game.final_price * exchangeRate;
+                }
+                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${priceInTL.toFixed(0)} ₺`;
                 const platformEmoji = game.platform === 'Steam' ? '♨️' :
                     game.platform === 'Epic Games' ? '🎮' : '🌌';
                 const metaStr = game.metacritic && game.metacritic > 0 ? `⭐ Metacritic: ${game.metacritic}\n` : '';
