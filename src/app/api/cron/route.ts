@@ -14,6 +14,12 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Max retry attempts for tweeting
 const MAX_TWEET_ATTEMPTS = 3;
 
+// Blacklist games that consistently fail (oversized images, duplicate issues)
+const BLACKLISTED_GAMES = [
+    'disco elysium',
+    'wavetale'
+];
+
 // ============ STEAM DEALS ============
 async function fetchSteamDeals(): Promise<any[]> {
     const deals: any[] = [];
@@ -246,6 +252,13 @@ export async function GET(request: NextRequest) {
 
             if (!game.header_image) {
                 continue; // Silent skip for no image
+            }
+
+            // Skip blacklisted games
+            const isBlacklisted = BLACKLISTED_GAMES.some(bg => game.name.toLowerCase().includes(bg));
+            if (isBlacklisted) {
+                log(`⚫ Skipping blacklisted: ${game.name}`);
+                continue;
             }
 
             log(`🎯 Trying: ${game.name} - ${game.discount_percent}% on ${game.platform}`);
