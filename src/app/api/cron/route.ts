@@ -2,47 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getTwitterClient } from '@/lib/twitter';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
-// GitHub Actions ile çalışır - timeout sorunu yok
+// CheapShark + Direct APIs - Fast (under 2 seconds)
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // 5 dakika (Vercel Pro için, Free'de 10s)
 
-const ITAD_API_KEY = process.env.ITAD_API_KEY || 'b0a1c3354549db7f5371f9b05de11261634a0aa4';
-const MIN_STEAM_REVIEWS = 1000;
+const MIN_METACRITIC = 60; // For CheapShark games
 const MIN_GOG_REVIEWS = 500;
 
-// ============ HELPERS ============
-async function getAppIdFromItad(itadId: string): Promise<string | null> {
-    try {
-        const res = await fetch(`https://api.isthereanydeal.com/games/info/v2?key=${ITAD_API_KEY}&id=${itadId}`);
-        if (res.ok) {
-            const data = await res.json();
-            return data.appid?.toString() || null;
-        }
-    } catch (e) { }
-    return null;
-}
+// Delay helper to avoid rate limiting
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function getSteamReviews(appId: string): Promise<{ count: number; percent: number } | null> {
-    try {
-        const res = await fetch(`https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=all`);
-        if (res.ok) {
-            const data = await res.json();
-            const positive = data.query_summary?.total_positive || 0;
-            const total = data.query_summary?.total_reviews || 0;
-            if (total > 0) {
-                return { count: total, percent: Math.round((positive / total) * 100) };
-            }
-        }
-    } catch (e) { }
-    return null;
-}
+// Max retry attempts for tweeting
+const MAX_TWEET_ATTEMPTS = 3;
 
 // ============ STEAM DEALS ============
 async function fetchSteamDeals(): Promise<any[]> {
     const deals: any[] = [];
     const seen = new Set<number>();
 
-    // Steam Featured API
     try {
         const res = await fetch('https://store.steampowered.com/api/featuredcategories?cc=tr', {
             headers: { 'User-Agent': 'Mozilla/5.0' }
@@ -60,8 +36,6 @@ async function fetchSteamDeals(): Promise<any[]> {
                 seen.add(item.id);
 
                 if (item.discounted && item.discount_percent >= 25) {
-                    const reviews = await getSteamReviews(item.id.toString());
-
                     deals.push({
                         id: item.id.toString(),
                         name: item.name,
@@ -69,8 +43,6 @@ async function fetchSteamDeals(): Promise<any[]> {
                         final_price: item.final_price / 100,
                         currency: 'TL',
                         platform: 'Steam',
-                        review_percent: reviews?.percent || 0,
-                        review_count: reviews?.count || 0,
                         url: `https://store.steampowered.com/app/${item.id}`,
                         header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/header.jpg`
                     });
@@ -84,11 +56,11 @@ async function fetchSteamDeals(): Promise<any[]> {
     return deals;
 }
 
-// ============ EPIC DEALS ============
+// ============ EPIC DEALS (CheapShark + Free Games) ============
 async function fetchEpicDeals(): Promise<any[]> {
     const deals: any[] = [];
 
-    // Epic Free Games
+    // Epic Free Games (direct API)
     try {
         const res = await fetch('https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=tr&country=TR', {
             headers: { 'User-Agent': 'Mozilla/5.0' }
@@ -106,14 +78,13 @@ async function fetchEpicDeals(): Promise<any[]> {
                     const slug = game.productSlug || game.urlSlug || game.catalogNs?.mappings?.[0]?.pageSlug;
                     if (slug && slug !== '[]') {
                         deals.push({
-                            id: `epic_${game.id}`,
+                            id: `epic_free_${game.id}`,
                             name: game.title,
                             discount_percent: 100,
                             final_price: 0,
                             currency: 'TL',
                             platform: 'Epic Games',
-                            review_percent: 90,
-                            review_count: 10000,
+                            metacritic: 90,
                             url: `https://store.epicgames.com/tr/p/${slug}`,
                             header_image: game.keyImages?.find((img: any) => img.type === 'OfferImageWide')?.url ||
                                 game.keyImages?.[0]?.url
@@ -126,43 +97,40 @@ async function fetchEpicDeals(): Promise<any[]> {
         console.error('Epic free games error:', e);
     }
 
-    // ITAD for Epic sales (with popularity filter)
+    // CheapShark for Epic sales (fast, no API key, Metacritic filter)
     try {
-        const res = await fetch(`https://api.isthereanydeal.com/deals/v2?key=${ITAD_API_KEY}&country=TR&shops=16&limit=30&sort=-cut`, {
+        const res = await fetch(`https://www.cheapshark.com/api/1.0/deals?storeID=25&upperPrice=50&onSale=1&pageSize=20&metacritic=${MIN_METACRITIC}`, {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         if (res.ok) {
             const data = await res.json();
-            const itadDeals = data.list || [];
 
-            for (const item of itadDeals) {
-                if (item.type === 'game' && item.deal.cut >= 50) { // Min %50 indirim
-                    const alreadyAdded = deals.some(d => d.name.toLowerCase() === item.title.toLowerCase());
+            for (const game of data) {
+                const discount = Math.round(parseFloat(game.savings) || 0);
+                if (discount >= 50) {
+                    const alreadyAdded = deals.some(d => d.name.toLowerCase() === game.title.toLowerCase());
                     if (!alreadyAdded) {
-                        const appId = await getAppIdFromItad(item.id);
-                        if (!appId) continue;
-
-                        const reviews = await getSteamReviews(appId);
-                        if (!reviews || reviews.count < MIN_STEAM_REVIEWS) continue;
+                        const steamAppId = game.steamAppID;
 
                         deals.push({
-                            id: `epic_${item.id}`,
-                            name: item.title,
-                            discount_percent: item.deal.cut,
-                            final_price: item.deal.price.amount,
-                            currency: 'TL',
+                            id: `epic_cs_${game.dealID}`,
+                            name: game.title,
+                            discount_percent: discount,
+                            final_price: parseFloat(game.salePrice) || 0,
+                            currency: 'USD',
                             platform: 'Epic Games',
-                            review_percent: reviews.percent,
-                            review_count: reviews.count,
-                            url: `https://store.epicgames.com/tr/p/${item.slug}`,
-                            header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`
+                            metacritic: parseInt(game.metacriticScore) || 0,
+                            url: `https://store.epicgames.com/tr/browse?q=${encodeURIComponent(game.title)}`,
+                            header_image: steamAppId
+                                ? `https://cdn.akamai.steamstatic.com/steam/apps/${steamAppId}/header.jpg`
+                                : game.thumb
                         });
                     }
                 }
             }
         }
     } catch (e) {
-        console.error('Epic ITAD error:', e);
+        console.error('CheapShark Epic error:', e);
     }
 
     return deals;
@@ -173,7 +141,7 @@ async function fetchGOGDeals(): Promise<any[]> {
     const deals: any[] = [];
 
     try {
-        const res = await fetch('https://catalog.gog.com/v1/catalog?limit=30&order=desc:discount&productType=in:game', {
+        const res = await fetch('https://catalog.gog.com/v1/catalog?limit=20&order=desc:discount&productType=in:game', {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         if (res.ok) {
@@ -184,7 +152,6 @@ async function fetchGOGDeals(): Promise<any[]> {
                 const discountStr = game.price?.discount || '0';
                 const discount = Math.abs(parseInt(discountStr.replace(/[^0-9-]/g, '')) || 0);
                 const reviewsCount = game.reviewsCount || 0;
-                const reviewsRating = game.reviewsRating || 0;
 
                 if (discount >= 25 && reviewsCount >= MIN_GOG_REVIEWS) {
                     deals.push({
@@ -194,8 +161,6 @@ async function fetchGOGDeals(): Promise<any[]> {
                         final_price: parseFloat(game.price?.finalMoney?.amount) || 0,
                         currency: game.price?.finalMoney?.currency || 'USD',
                         platform: 'GOG',
-                        review_percent: Math.round((reviewsRating / 50) * 100),
-                        review_count: reviewsCount,
                         url: game.storeLink || `https://www.gog.com/en/game/${game.slug}`,
                         header_image: game.coverHorizontal || null
                     });
@@ -212,6 +177,11 @@ async function fetchGOGDeals(): Promise<any[]> {
 // ============ MAIN HANDLER ============
 export async function GET(request: NextRequest) {
     const startTime = Date.now();
+    const logs: string[] = [];
+    const log = (msg: string) => {
+        console.log(msg);
+        logs.push(msg);
+    };
 
     try {
         // 1. Security Check
@@ -223,8 +193,8 @@ export async function GET(request: NextRequest) {
         const twitterClient = getTwitterClient();
         const supabaseAdmin = getSupabaseAdmin();
 
-        // 2. Fetch deals from all platforms
-        console.log('🔍 Fetching deals from all platforms...');
+        // 2. Fetch deals from all platforms (PARALLEL - Fast!)
+        log('🔍 Fetching deals...');
         const [steamDeals, epicDeals, gogDeals] = await Promise.all([
             fetchSteamDeals(),
             fetchEpicDeals(),
@@ -232,7 +202,7 @@ export async function GET(request: NextRequest) {
         ]);
 
         const allDeals = [...steamDeals, ...epicDeals, ...gogDeals];
-        console.log(`📦 Steam: ${steamDeals.length} | Epic: ${epicDeals.length} | GOG: ${gogDeals.length}`);
+        log(`📦 Steam: ${steamDeals.length} | Epic: ${epicDeals.length} | GOG: ${gogDeals.length}`);
 
         // 3. Deduplicate and sort by discount
         const seen = new Set<string>();
@@ -243,7 +213,7 @@ export async function GET(request: NextRequest) {
             return true;
         }).sort((a, b) => b.discount_percent - a.discount_percent);
 
-        console.log(`🎯 Total unique: ${uniqueDeals.length}`);
+        log(`🎯 Total unique: ${uniqueDeals.length}`);
 
         // 4. Calculate repost window
         const poolSize = uniqueDeals.length;
@@ -252,9 +222,18 @@ export async function GET(request: NextRequest) {
         else if (poolSize >= 30) repostHours = 72;
 
         const repostWindow = new Date(Date.now() - repostHours * 60 * 60 * 1000).toISOString();
+        log(`🕒 Repost window: last ${repostHours} hours (${repostWindow})`);
 
-        // 5. Find first eligible game
+        // 5. Find first eligible game (with rate limit protection)
+        let tweetAttempts = 0;
+
         for (const game of uniqueDeals) {
+            // Stop if we've tried too many times (rate limit protection)
+            if (tweetAttempts >= MAX_TWEET_ATTEMPTS) {
+                log(`⚠️ STOPPING: Max tweet attempts (${MAX_TWEET_ATTEMPTS}) reached to avoid rate limiting`);
+                break;
+            }
+
             const { data: existing } = await supabaseAdmin
                 .from('posted_games')
                 .select('id')
@@ -262,46 +241,54 @@ export async function GET(request: NextRequest) {
                 .gt('created_at', repostWindow);
 
             if (existing && existing.length > 0) {
-                console.log(`SKIP: ${game.name} - Posted recently`);
-                continue;
+                continue; // Silent skip for already posted
             }
 
             if (!game.header_image) {
-                console.log(`SKIP: ${game.name} - No image`);
-                continue;
+                continue; // Silent skip for no image
             }
 
-            console.log(`✅ SELECTED: ${game.name} - ${game.discount_percent}% on ${game.platform}`);
+            log(`🎯 Trying: ${game.name} - ${game.discount_percent}% on ${game.platform}`);
+            tweetAttempts++;
+
+            // Add delay between tweet attempts (except first one)
+            if (tweetAttempts > 1) {
+                log(`⏳ Waiting 3 seconds before next attempt...`);
+                await delay(3000);
+            }
 
             // 6. Fetch image and post
             try {
                 const imgRes = await fetch(game.header_image, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-                if (!imgRes.ok) continue;
+                if (!imgRes.ok) {
+                    log(`⚠️ Image failed for ${game.name} (${imgRes.status})`);
+                    continue;
+                }
 
                 const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
                 const mediaId = await twitterClient.v1.uploadMedia(imgBuffer, { mimeType: 'image/jpeg' });
 
                 // 7. Format Tweet
-                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${game.final_price.toFixed(2)} ₺`;
+                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${game.final_price.toFixed(2)} ${game.currency === 'TL' ? '₺' : '$'}`;
                 const platformEmoji = game.platform === 'Steam' ? '♨️' :
                     game.platform === 'Epic Games' ? '🎮' : '🌌';
-                const reviewStr = game.review_percent > 0 ? `⭐ %${game.review_percent} Olumlu\n` : '';
+                const metaStr = game.metacritic && game.metacritic > 0 ? `⭐ Metacritic: ${game.metacritic}\n` : '';
 
                 const tweetText = `🔥 ${game.name}
 
 📉 %${game.discount_percent} İndirim
 🏷️ ${priceStr}
 ${platformEmoji} ${game.platform}
-${reviewStr}
+${metaStr}
 🔗 ${game.url}`.trim();
 
                 // 8. Post Tweet
                 await twitterClient.v2.tweet({ text: tweetText, media: { media_ids: [mediaId] } });
 
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-                console.log(`✅ Tweet posted in ${elapsed}s`);
+                log(`✅ SUCCESS: Tweet posted for ${game.name} in ${elapsed}s`);
 
-                // 9. Log to DB - extract numeric app_id or use 0
+                // 9. Log to DB
                 const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 10)) || 0;
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
@@ -311,7 +298,7 @@ ${reviewStr}
                 });
 
                 if (dbError) {
-                    console.error('DB insert error:', dbError.message);
+                    log(`⚠️ DB insert error: ${dbError.message}`);
                 }
 
                 return NextResponse.json({
@@ -320,21 +307,37 @@ ${reviewStr}
                     platform: game.platform,
                     discount: `${game.discount_percent}%`,
                     price: priceStr,
-                    reviews: `${game.review_percent}%`,
-                    elapsed: `${elapsed}s`
+                    metacritic: game.metacritic || 'N/A',
+                    elapsed: `${elapsed}s`,
+                    logs
                 });
 
             } catch (err: any) {
-                console.error(`Failed: ${game.name}`, err.message);
+                const errorCode = err.code || err.data?.status || 'unknown';
+                log(`❌ Failed: ${game.name} - ${err.message || errorCode}`);
+
+                // Stop immediately on rate limit (429)
+                if (err.code === 429 || err.message?.includes('429') || err.message?.includes('Too Many')) {
+                    log(`🛑 RATE LIMITED! Stopping to avoid more 429 errors.`);
+                    return NextResponse.json({
+                        error: 'Rate limited by Twitter',
+                        message: 'Try again after 15 minutes',
+                        attempts: tweetAttempts,
+                        logs
+                    }, { status: 429 });
+                }
+
+                // For other errors, continue to next game
                 continue;
             }
         }
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-        return NextResponse.json({ message: 'No new eligible games.', elapsed: `${elapsed}s` });
+        log(`INFO: Finished scanning all ${uniqueDeals.length} unique deals. No new eligible games found.`);
+        return NextResponse.json({ message: 'No new eligible games.', elapsed: `${elapsed}s`, logs });
 
     } catch (error: any) {
-        console.error('Cron failed:', error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        log(`CRITICAL: Cron failed: ${error.message}`);
+        return NextResponse.json({ error: error.message, logs: logs.length > 0 ? logs : undefined }, { status: 500 });
     }
 }
