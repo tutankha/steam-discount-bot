@@ -259,14 +259,21 @@ export async function GET(request: NextRequest) {
                 break;
             }
 
-            const { data: existing } = await supabaseAdmin
+            // Check if already posted (case-insensitive search)
+            const normalizedTitle = game.name.toLowerCase().trim();
+            const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
-                .select('id')
-                .eq('game_title', game.name)
+                .select('id, game_title, created_at')
+                .ilike('game_title', normalizedTitle)
                 .gt('created_at', repostWindow);
 
+            if (queryError) {
+                log(`⚠️ DB query error: ${queryError.message}`);
+            }
+
             if (existing && existing.length > 0) {
-                continue; // Silent skip for already posted
+                log(`⏭️ Skip: ${game.name} (posted ${existing[0].created_at})`);
+                continue;
             }
 
             if (!game.header_image) {
@@ -326,15 +333,18 @@ ${metaStr}🔗 ${game.url}`.trim();
 
                 // 9. Log to DB
                 const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 10)) || 0;
+                const normalizedTitleForDB = game.name.toLowerCase().trim();
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
                     app_id: numericAppId,
-                    game_title: game.name,
+                    game_title: normalizedTitleForDB,
                     price_usd: game.final_price || 0
                 });
 
                 if (dbError) {
                     log(`⚠️ DB insert error: ${dbError.message}`);
+                } else {
+                    log(`📝 Saved to DB: ${normalizedTitleForDB}`);
                 }
 
                 return NextResponse.json({
