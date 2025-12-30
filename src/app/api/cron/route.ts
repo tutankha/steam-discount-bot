@@ -273,12 +273,14 @@ export async function GET(request: NextRequest) {
                 break;
             }
 
-            // Check if already posted (case-insensitive search)
+            // Check if already posted - use first 3 words as fuzzy match prefix
             const normalizedTitle = normalizeGameName(game.name);
+            const searchPrefix = normalizedTitle.split(' ').slice(0, 3).join(' '); // First 3 words
+
             const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id, game_title, created_at')
-                .ilike('game_title', normalizedTitle)
+                .ilike('game_title', `${searchPrefix}%`) // Wildcard match on first words
                 .gt('created_at', repostWindow);
 
             if (queryError) {
@@ -286,7 +288,7 @@ export async function GET(request: NextRequest) {
             }
 
             if (existing && existing.length > 0) {
-                log(`⏭️ Skip: ${game.name} (posted ${existing[0].created_at})`);
+                log(`⏭️ Skip: ${game.name} (found: "${existing[0].game_title}")`);
                 continue;
             }
 
