@@ -310,10 +310,12 @@ export async function GET(request: NextRequest) {
                 // 7. Format Tweet - Convert USD to TL using live rate
                 const exchangeRate = await getExchangeRate();
                 let priceInTL = game.final_price;
+                let decimals = 2; // Default: 2 decimals for original TL prices
                 if (game.currency === 'USD' && game.final_price > 0) {
                     priceInTL = game.final_price * exchangeRate;
+                    decimals = 0; // Rounded for converted prices
                 }
-                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${priceInTL.toFixed(0)} ₺`;
+                const priceStr = game.final_price === 0 ? '🆓 ÜCRETSİZ' : `${priceInTL.toFixed(decimals)} ₺`;
                 const platformEmoji = game.platform === 'Steam' ? '♨️' :
                     game.platform === 'Epic Games' ? '🎮' : '🌌';
                 const metaStr = game.metacritic && game.metacritic > 0 ? `⭐ Metacritic: ${game.metacritic}\n` : '';
