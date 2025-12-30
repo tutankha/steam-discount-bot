@@ -26,7 +26,7 @@ async function fetchSteamDeals() {
                         name: item.name,
                         discount_percent: item.discount_percent,
                         final_price: item.final_price / 100,
-                        currency: 'TL',
+                        currency: 'USD', // Steam returns USD
                         platform: 'Steam',
                         url: `https://store.steampowered.com/app/${item.id}`
                     });
@@ -150,16 +150,32 @@ async function testSelection() {
     console.log(`🌌 GOG: ${gogDeals.length} oyun`);
     console.log(`\n⏱️  Toplam süre: ${elapsed} saniye\n`);
 
+    // Normalize names for matching
+    const normalizeGameName = name =>
+        name.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+
     const allDeals = [...steamDeals, ...epicDeals, ...gogDeals];
 
-    const seen = new Set();
-    const uniqueDeals = allDeals.filter(d => {
-        const key = d.name.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+    // Keep best deal per game (highest discount, then lowest price)
+    const bestDeals = new Map();
+    for (const deal of allDeals) {
+        const key = normalizeGameName(deal.name);
+        const existing = bestDeals.get(key);
 
+        if (!existing) {
+            bestDeals.set(key, deal);
+        } else {
+            const isBetterDiscount = deal.discount_percent > existing.discount_percent;
+            const isSameDiscountLowerPrice = deal.discount_percent === existing.discount_percent
+                && deal.final_price < existing.final_price;
+
+            if (isBetterDiscount || isSameDiscountLowerPrice) {
+                bestDeals.set(key, deal);
+            }
+        }
+    }
+
+    const uniqueDeals = Array.from(bestDeals.values());
     uniqueDeals.sort((a, b) => b.discount_percent - a.discount_percent);
 
     console.log(`🎯 Toplam benzersiz: ${uniqueDeals.length} oyun\n`);
