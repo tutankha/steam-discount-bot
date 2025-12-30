@@ -103,7 +103,7 @@ async function fetchEpicDeals(): Promise<any[]> {
                             name: game.title,
                             discount_percent: 100,
                             final_price: 0,
-                            currency: 'TL',
+                            currency: 'USD', // Free = 0, currency doesn't matter
                             platform: 'Epic Games',
                             metacritic: 90,
                             url: `https://store.epicgames.com/tr/p/${slug}`,
@@ -225,18 +225,32 @@ export async function GET(request: NextRequest) {
         const allDeals = [...steamDeals, ...epicDeals, ...gogDeals];
         log(`📦 Steam: ${steamDeals.length} | Epic: ${epicDeals.length} | GOG: ${gogDeals.length}`);
 
-        // 3. Deduplicate and sort by discount
+        // 3. Deduplicate: keep best deal per game (highest discount, then lowest price)
         // Normalize names by removing special characters for better matching
         const normalizeGameName = (name: string) =>
             name.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
-        const seen = new Set<string>();
-        const uniqueDeals = allDeals.filter(d => {
-            const key = normalizeGameName(d.name);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        }).sort((a, b) => b.discount_percent - a.discount_percent);
+        const bestDeals = new Map<string, any>();
+        for (const deal of allDeals) {
+            const key = normalizeGameName(deal.name);
+            const existing = bestDeals.get(key);
+
+            if (!existing) {
+                bestDeals.set(key, deal);
+            } else {
+                // Keep the one with higher discount, or if same, lower price
+                const isBetterDiscount = deal.discount_percent > existing.discount_percent;
+                const isSameDiscountLowerPrice = deal.discount_percent === existing.discount_percent
+                    && deal.final_price < existing.final_price;
+
+                if (isBetterDiscount || isSameDiscountLowerPrice) {
+                    bestDeals.set(key, deal);
+                }
+            }
+        }
+
+        const uniqueDeals = Array.from(bestDeals.values())
+            .sort((a, b) => b.discount_percent - a.discount_percent);
 
         log(`🎯 Total unique: ${uniqueDeals.length}`);
 
@@ -260,7 +274,7 @@ export async function GET(request: NextRequest) {
             }
 
             // Check if already posted (case-insensitive search)
-            const normalizedTitle = game.name.toLowerCase().trim();
+            const normalizedTitle = normalizeGameName(game.name);
             const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id, game_title, created_at')
@@ -335,7 +349,7 @@ ${metaStr}🔗 ${game.url}`.trim();
 
                 // 9. Log to DB
                 const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 9)) || 0;
-                const normalizedTitleForDB = game.name.toLowerCase().trim();
+                const normalizedTitleForDB = normalizeGameName(game.name);
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
                     app_id: numericAppId,
