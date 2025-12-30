@@ -62,7 +62,7 @@ async function fetchSteamDeals(): Promise<any[]> {
                         name: item.name,
                         discount_percent: item.discount_percent,
                         final_price: item.final_price / 100,
-                        currency: 'TL',
+                        currency: 'USD', // Steam returns USD even with cc=tr
                         platform: 'Steam',
                         url: `https://store.steampowered.com/app/${item.id}`,
                         header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/header.jpg`
@@ -334,7 +334,7 @@ ${metaStr}🔗 ${game.url}`.trim();
                 log(`✅ SUCCESS: Tweet posted for ${game.name} in ${elapsed}s`);
 
                 // 9. Log to DB
-                const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 10)) || 0;
+                const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 9)) || 0;
                 const normalizedTitleForDB = game.name.toLowerCase().trim();
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
