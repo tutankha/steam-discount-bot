@@ -254,16 +254,7 @@ export async function GET(request: NextRequest) {
 
         log(`🎯 Total unique: ${uniqueDeals.length}`);
 
-        // 4. Calculate repost window
-        const poolSize = uniqueDeals.length;
-        let repostHours = 48;
-        if (poolSize >= 50) repostHours = 120;
-        else if (poolSize >= 30) repostHours = 72;
-
-        const repostWindow = new Date(Date.now() - repostHours * 60 * 60 * 1000).toISOString();
-        log(`🕒 Repost window: last ${repostHours} hours (${repostWindow})`);
-
-        // 5. Find first eligible game (with rate limit protection)
+        // 4. Find first eligible game (with rate limit protection)
         let tweetAttempts = 0;
 
         for (const game of uniqueDeals) {
@@ -273,22 +264,21 @@ export async function GET(request: NextRequest) {
                 break;
             }
 
-            // Check if already posted - use first 3 words as fuzzy match prefix
+            // Check if already posted (PERMANENT - never repost)
             const normalizedTitle = normalizeGameName(game.name);
             const searchPrefix = normalizedTitle.split(' ').slice(0, 3).join(' '); // First 3 words
 
             const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
                 .select('id, game_title, created_at')
-                .ilike('game_title', `${searchPrefix}%`) // Wildcard match on first words
-                .gt('created_at', repostWindow);
+                .ilike('game_title', `${searchPrefix}%`); // No time limit - check ALL history
 
             if (queryError) {
                 log(`⚠️ DB query error: ${queryError.message}`);
             }
 
             if (existing && existing.length > 0) {
-                log(`⏭️ Skip: ${game.name} (found: "${existing[0].game_title}")`);
+                log(`⏭️ Skip: ${game.name} (already posted: "${existing[0].game_title}")`);
                 continue;
             }
 
