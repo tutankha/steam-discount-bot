@@ -2,8 +2,8 @@ name: Post Game Deals
 
 on:
   schedule:
-    # Her 2 saatte bir çalışır (UTC)
-    - cron: '0 */2 * * *'
+    # Sabah 8 - Gece 12 Türkiye saati, her 2 saatte bir (UTC: 5,7,9,11,13,15,17,19,21)
+    - cron: '0 5,7,9,11,13,15,17,19,21 * * *'
   workflow_dispatch: # Manuel tetikleme için
 
 jobs:
