@@ -268,21 +268,23 @@ export async function GET(request: NextRequest) {
                 break;
             }
 
-            // Check if already posted (PERMANENT - never repost)
+            // Check if same game + same discount was already posted
             const normalizedTitle = normalizeGameName(game.name);
             const searchPrefix = normalizedTitle.split(' ').slice(0, 3).join(' '); // First 3 words
 
             const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
-                .select('id, game_title, created_at')
-                .ilike('game_title', `${searchPrefix}%`); // No time limit - check ALL history
+                .select('id, game_title, discount_percent, created_at')
+                .ilike('game_title', `${searchPrefix}%`);
 
             if (queryError) {
                 log(`⚠️ DB query error: ${queryError.message}`);
             }
 
-            if (existing && existing.length > 0) {
-                log(`⏭️ Skip: ${game.name} (already posted: "${existing[0].game_title}")`);
+            // Skip only if same game AND same discount was posted before
+            const sameDiscountExists = existing?.some(e => e.discount_percent === game.discount_percent);
+            if (sameDiscountExists) {
+                log(`⏭️ Skip: ${game.name} (same %${game.discount_percent} discount already posted)`);
                 continue;
             }
 
@@ -343,13 +345,14 @@ ${metaStr}🔗 ${game.url}`.trim();
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
                 log(`✅ SUCCESS: Tweet posted for ${game.name} in ${elapsed}s`);
 
-                // 9. Log to DB
+                // 9. Log to DB with discount percentage
                 const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 9)) || 0;
                 const normalizedTitleForDB = normalizeGameName(game.name);
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
                     app_id: numericAppId,
                     game_title: normalizedTitleForDB,
+                    discount_percent: game.discount_percent,
                     price_usd: game.final_price || 0
                 });
 
