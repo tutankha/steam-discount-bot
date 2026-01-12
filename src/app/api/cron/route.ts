@@ -42,7 +42,8 @@ async function fetchSteamDeals(): Promise<any[]> {
 
     try {
         const res = await fetch('https://store.steampowered.com/api/featuredcategories?cc=tr', {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            cache: 'no-store'
         });
         if (res.ok) {
             const data = await res.json();
@@ -84,7 +85,8 @@ async function fetchEpicDeals(): Promise<any[]> {
     // Epic Free Games (direct API)
     try {
         const res = await fetch('https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=tr&country=TR', {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            cache: 'no-store'
         });
         if (res.ok) {
             const data = await res.json();
@@ -121,7 +123,8 @@ async function fetchEpicDeals(): Promise<any[]> {
     // CheapShark for Epic sales (fast, no API key, Metacritic filter)
     try {
         const res = await fetch(`https://www.cheapshark.com/api/1.0/deals?storeID=25&upperPrice=50&onSale=1&pageSize=20&metacritic=${MIN_METACRITIC}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            cache: 'no-store'
         });
         if (res.ok) {
             const data = await res.json();
@@ -163,7 +166,8 @@ async function fetchGOGDeals(): Promise<any[]> {
 
     try {
         const res = await fetch('https://catalog.gog.com/v1/catalog?limit=20&order=desc:discount&productType=in:game', {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            cache: 'no-store'
         });
         if (res.ok) {
             const data = await res.json();
