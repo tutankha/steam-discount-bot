@@ -38,8 +38,9 @@ async function getExchangeRate(): Promise<number> {
 // ============ STEAM DEALS ============
 async function fetchSteamDeals(): Promise<any[]> {
     const deals: any[] = [];
-    const seen = new Set<number>();
+    const seen = new Set<string>();
 
+    // Source 1: Steam Featured Categories API
     try {
         const res = await fetch('https://store.steampowered.com/api/featuredcategories?cc=tr', {
             headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -54,16 +55,17 @@ async function fetchSteamDeals(): Promise<any[]> {
             ];
 
             for (const item of allItems) {
-                if (seen.has(item.id)) continue;
-                seen.add(item.id);
+                const key = item.id.toString();
+                if (seen.has(key)) continue;
+                seen.add(key);
 
                 if (item.discounted && item.discount_percent >= 25) {
                     deals.push({
-                        id: item.id.toString(),
+                        id: key,
                         name: item.name,
                         discount_percent: item.discount_percent,
                         final_price: item.final_price / 100,
-                        currency: 'USD', // Steam returns USD even with cc=tr
+                        currency: 'USD',
                         platform: 'Steam',
                         url: `https://store.steampowered.com/app/${item.id}`,
                         header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/header.jpg`
@@ -72,7 +74,40 @@ async function fetchSteamDeals(): Promise<any[]> {
             }
         }
     } catch (e) {
-        console.error('Steam error:', e);
+        console.error('Steam featured error:', e);
+    }
+
+    // Source 2: CheapShark API for more Steam deals (storeID=1 is Steam)
+    try {
+        const res = await fetch(`https://www.cheapshark.com/api/1.0/deals?storeID=1&upperPrice=50&onSale=1&pageSize=30&metacritic=${MIN_METACRITIC}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            cache: 'no-store'
+        });
+        if (res.ok) {
+            const data = await res.json();
+            for (const game of data) {
+                const discount = Math.round(parseFloat(game.savings) || 0);
+                if (discount >= 50 && game.steamAppID) {
+                    const key = game.steamAppID;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+
+                    deals.push({
+                        id: key,
+                        name: game.title,
+                        discount_percent: discount,
+                        final_price: parseFloat(game.salePrice) || 0,
+                        currency: 'USD',
+                        platform: 'Steam',
+                        metacritic: parseInt(game.metacriticScore) || 0,
+                        url: `https://store.steampowered.com/app/${game.steamAppID}`,
+                        header_image: `https://cdn.akamai.steamstatic.com/steam/apps/${game.steamAppID}/header.jpg`
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('CheapShark Steam error:', e);
     }
 
     return deals;
@@ -268,23 +303,21 @@ export async function GET(request: NextRequest) {
                 break;
             }
 
-            // Check if same game + same discount was already posted
+            // Check if already posted (PERMANENT - never repost)
             const normalizedTitle = normalizeGameName(game.name);
             const searchPrefix = normalizedTitle.split(' ').slice(0, 3).join(' '); // First 3 words
 
             const { data: existing, error: queryError } = await supabaseAdmin
                 .from('posted_games')
-                .select('id, game_title, discount_percent, created_at')
-                .ilike('game_title', `${searchPrefix}%`);
+                .select('id, game_title, created_at')
+                .ilike('game_title', `${searchPrefix}%`); // No time limit - check ALL history
 
             if (queryError) {
                 log(`⚠️ DB query error: ${queryError.message}`);
             }
 
-            // Skip only if same game AND same discount was posted before
-            const sameDiscountExists = existing?.some(e => e.discount_percent === game.discount_percent);
-            if (sameDiscountExists) {
-                log(`⏭️ Skip: ${game.name} (same %${game.discount_percent} discount already posted)`);
+            if (existing && existing.length > 0) {
+                log(`⏭️ Skip: ${game.name} (already posted: "${existing[0].game_title}")`);
                 continue;
             }
 
@@ -345,14 +378,13 @@ ${metaStr}🔗 ${game.url}`.trim();
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
                 log(`✅ SUCCESS: Tweet posted for ${game.name} in ${elapsed}s`);
 
-                // 9. Log to DB with discount percentage
+                // 9. Log to DB
                 const numericAppId = parseInt(game.id.replace(/\D/g, '').slice(0, 9)) || 0;
                 const normalizedTitleForDB = normalizeGameName(game.name);
 
                 const { error: dbError } = await supabaseAdmin.from('posted_games').insert({
                     app_id: numericAppId,
                     game_title: normalizedTitleForDB,
-                    discount_percent: game.discount_percent,
                     price_usd: game.final_price || 0
                 });
 

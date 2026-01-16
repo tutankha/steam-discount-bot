@@ -1,4 +1,4 @@
-// Fast Test Script - CheapShark for Epic (No API Key, Fast!)
+// Fast Test Script - CheapShark for Epic + Steam
 const MIN_METACRITIC = 60;
 const MIN_GOG_REVIEWS = 500;
 
@@ -6,6 +6,7 @@ async function fetchSteamDeals() {
     const deals = [];
     const seen = new Set();
 
+    // Source 1: Steam Featured Categories
     try {
         const res = await fetch('https://store.steampowered.com/api/featuredcategories?cc=tr');
         if (res.ok) {
@@ -17,23 +18,51 @@ async function fetchSteamDeals() {
             ];
 
             allItems.forEach(item => {
-                if (seen.has(item.id)) return;
-                seen.add(item.id);
+                const key = item.id.toString();
+                if (seen.has(key)) return;
+                seen.add(key);
 
                 if (item.discounted && item.discount_percent >= 25) {
                     deals.push({
-                        id: item.id.toString(),
+                        id: key,
                         name: item.name,
                         discount_percent: item.discount_percent,
                         final_price: item.final_price / 100,
-                        currency: 'USD', // Steam returns USD
+                        currency: 'USD',
                         platform: 'Steam',
                         url: `https://store.steampowered.com/app/${item.id}`
                     });
                 }
             });
         }
-    } catch (e) { console.error('Steam error:', e.message); }
+    } catch (e) { console.error('Steam featured error:', e.message); }
+
+    // Source 2: CheapShark for more Steam deals
+    try {
+        const res = await fetch(`https://www.cheapshark.com/api/1.0/deals?storeID=1&upperPrice=50&onSale=1&pageSize=30&metacritic=${MIN_METACRITIC}`);
+        if (res.ok) {
+            const data = await res.json();
+            for (const game of data) {
+                const discount = Math.round(parseFloat(game.savings) || 0);
+                if (discount >= 50 && game.steamAppID) {
+                    const key = game.steamAppID;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+
+                    deals.push({
+                        id: key,
+                        name: game.title,
+                        discount_percent: discount,
+                        final_price: parseFloat(game.salePrice) || 0,
+                        currency: 'USD',
+                        platform: 'Steam',
+                        metacritic: parseInt(game.metacriticScore) || 0,
+                        url: `https://store.steampowered.com/app/${game.steamAppID}`
+                    });
+                }
+            }
+        }
+    } catch (e) { console.error('CheapShark Steam error:', e.message); }
 
     return deals;
 }
